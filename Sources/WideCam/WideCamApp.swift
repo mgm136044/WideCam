@@ -44,7 +44,12 @@ struct WideCamApp: App {
         // 켜고·찍고·끄는 일만 하고, 전체화면·해상도·좌우반전은 큰 창에 남긴다.
         // .window 스타일은 메뉴처럼 항목만 나열하는 대신 임의의 SwiftUI 뷰(라이브
         // 프리뷰)를 띄울 수 있게 한다.
-        MenuBarExtra("WideCam", systemImage: "iphone.rear.camera") {
+        // 아이콘이 녹화 상태를 말한다. 팝오버를 닫고 녹화하는 동안 앱이 내보내는 신호가
+        // 하나도 없으면(경과 시간과 정지 버튼은 팝오버를 다시 열어야 보인다) 사용자는
+        // 녹화 중임을 잊는다 — 전체화면 자동 숨김에서까지 녹화를 예외로 둔 기준(§9)을
+        // 메뉴바에도 같이 적용한다.
+        MenuBarExtra("WideCam",
+                     systemImage: camera.isRecording ? "record.circle" : "iphone.rear.camera") {
             MenuBarView(camera: camera,
                         mainWindowHolder: mainWindowHolder,
                         popoverPresence: popoverPresence)

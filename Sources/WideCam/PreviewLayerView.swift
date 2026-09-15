@@ -29,7 +29,12 @@ struct PreviewLayerView: NSViewRepresentable {
         // 최초 적용은 attachPreview가 맡는다(부착이 비동기라 여기서는 첫 렌더에 연결이
         // 없을 수 있다). 이 경로는 그 뒤의 토글 변경을 반영한다 — isMirrored가 바뀌면
         // 렌더가 보장되고 그때는 연결이 이미 존재한다.
-        if let connection = nsView.previewLayer.connection {
+        // 값이 바뀔 때만 쓴다. 녹화 중에는 초당 1회 body가 재평가되는데, 그때마다
+        // 실행 중인 캡처 연결에 같은 값을 다시 쓰고 있었다. 이 메인 큐 대입은 이 앱이
+        // 3회차 크래시 이후 "재발 시 1순위 용의자"로 기록해 둔 경로라 노출 횟수를
+        // 0으로 줄인다.
+        if let connection = nsView.previewLayer.connection,
+           connection.isVideoMirrored != isMirrored {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = isMirrored
         }
