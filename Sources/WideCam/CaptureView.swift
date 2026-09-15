@@ -9,7 +9,7 @@ struct CaptureView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black.ignoresSafeArea()
-            PreviewLayerView(session: camera.session, isMirrored: camera.isMirrored)
+            PreviewLayerView(camera: camera, isMirrored: camera.isMirrored)
                 .ignoresSafeArea()
 
             FlashOverlay(trigger: camera.flashPulse)
