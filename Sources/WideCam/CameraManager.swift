@@ -42,8 +42,11 @@ final class CameraManager: NSObject, ObservableObject {
     /// 물어보기만 하려고 클로저로 받는다.
     var isPresentationReady: (() -> Bool)?
 
-    let session = AVCaptureSession()
-    let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
+    // 세션과 그 소유 큐는 매니저 밖으로 내보내지 않는다. 뷰가 session을 직접 쥐면
+    // 이번 크래시(메인에서 layer.session 대입 ↔ sessionQueue의 startRunning 경합)가
+    // 그대로 재발할 수 있다. 프리뷰 부착은 attachPreview/detachPreview로만 한다.
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
 
     private(set) var selectedDevice: AVCaptureDevice?
     // formatObservation의 소유 큐는 sessionQueue다. 등록(observeFormatReversion)과
@@ -207,6 +210,28 @@ final class CameraManager: NSObject, ObservableObject {
                     [AVVideoCodecKey: AVVideoCodecType.hevc], for: connection)
             }
         }
+    }
+
+    // MARK: - 프리뷰 레이어 부착
+
+    /// 프리뷰 레이어의 세션 부착도 "세션 변형"이다. 메인 큐에서 `layer.session = ...`을
+    /// 대입하면 sessionQueue의 `startRunning()`이 세션의 연결 컬렉션을 순회하는 중에
+    /// 그 컬렉션이 바뀌어 NSGenericException("Collection was mutated while being
+    /// enumerated")으로 프로세스가 죽는다 — 3회차 스모크에서 실측했다.
+    ///
+    /// start()는 sessionQueue 블록을 넣기 "전에" 메인에서 phase를 .capturing으로 바꾸므로,
+    /// SwiftUI가 프리뷰 뷰를 만들어 부착하는 시점과 startRunning()이 정확히 겹친다.
+    /// 메뉴바 구조에서 프리뷰 표면이 둘(팝오버·큰 창)로 늘어 그 창이 더 넓어졌다.
+    /// 그래서 세션을 만지는 모든 경로를 sessionQueue 하나로 모은다(FIFO 덕에 부착은
+    /// 항상 startRunning() 뒤, 분리는 항상 teardown 뒤로 줄을 선다).
+    func attachPreview(_ layer: AVCaptureVideoPreviewLayer) {
+        sessionQueue.async { [session] in layer.session = session }
+    }
+
+    /// 분리도 같은 이유로 sessionQueue에서 한다. 메인에서 떼면 returnToConnect()의
+    /// removeInput/removeOutput·stopRunning과 겹칠 수 있다.
+    func detachPreview(_ layer: AVCaptureVideoPreviewLayer) {
+        sessionQueue.async { layer.session = nil }
     }
 
     /// 세션 시작에 실패했을 때 연결 화면으로 되돌리고 원인을 배너로 알린다(설계 §9).

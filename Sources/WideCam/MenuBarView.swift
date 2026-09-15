@@ -128,7 +128,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 10) {
             ZStack {
                 Color.black
-                PreviewLayerView(session: camera.session, isMirrored: camera.isMirrored)
+                PreviewLayerView(camera: camera, isMirrored: camera.isMirrored)
                 // 팝오버에는 셔터 소리도 저장물 안내도 없다. 큰 창과 같은 번쩍임으로
                 // 사진이 찍혔다는 사실을 알린다(CaptureView의 FlashOverlay 재사용).
                 FlashOverlay(trigger: camera.flashPulse)
