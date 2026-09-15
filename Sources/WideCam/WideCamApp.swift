@@ -22,6 +22,11 @@ struct WideCamApp: App {
             }
             .frame(minWidth: 720, minHeight: 560)
         }
+        // 메뉴바 상주 앱은 시작할 때 창을 열지 않는다. 이 한 줄이 없으면 SwiftUI가
+        // 시작과 동시에 이 창을 띄우고, 그러면 MenuBarView의 자동 정지 판정
+        // (isMainWindowVisible)이 항상 참이 되어 팝오버를 닫아도 카메라가 켜진 채로
+        // 남는다. 창은 "큰 창 열기"나 창 복원 때만 열린다.
+        .defaultLaunchBehavior(.suppressed)
 
         // 메뉴바 상주. 위 Window와 같은 camera를 공유하므로 세션은 하나다. 팝오버는
         // 켜고·찍고·끄는 일만 하고, 전체화면·해상도·좌우반전은 큰 창에 남긴다.
