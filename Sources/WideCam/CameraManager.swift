@@ -22,8 +22,10 @@ final class CameraManager: NSObject, ObservableObject {
     let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
 
     private(set) var selectedDevice: AVCaptureDevice?
+    // formatObservation의 소유 큐는 sessionQueue다. 등록(observeFormatReversion)과
+    // 해제(returnToConnect)를 모두 sessionQueue에서 처리해 FIFO 순서를 보장한다.
     private var formatObservation: NSKeyValueObservation?
-    // 아래 두 변수는 sessionQueue에서만 접근한다.
+    // 아래 두 변수도 sessionQueue에서만 접근한다.
     private var targetSpec: FormatSpec?
     private var isApplyingFormat = false
 
@@ -90,9 +92,23 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self else { return }
             self.session.beginConfiguration()
             self.session.inputs.forEach(self.session.removeInput)
-            if let input = try? AVCaptureDeviceInput(device: device), self.session.canAddInput(input) {
-                self.session.addInput(input)
+
+            // 입력 연결 실패는 조용히 넘기지 않는다(설계 §9). 입력 없는 세션을
+            // startRunning()하면 프리뷰가 검은 화면으로 남고 원인을 알 수 없다.
+            let input: AVCaptureDeviceInput
+            do {
+                input = try AVCaptureDeviceInput(device: device)
+            } catch {
+                self.session.commitConfiguration()
+                self.failToStart("카메라 입력 연결 실패: \(error.localizedDescription)")
+                return
             }
+            guard self.session.canAddInput(input) else {
+                self.session.commitConfiguration()
+                self.failToStart("카메라 입력을 세션에 추가할 수 없습니다.")
+                return
+            }
+            self.session.addInput(input)
             self.session.commitConfiguration()
             self.session.startRunning()
 
@@ -101,6 +117,14 @@ final class CameraManager: NSObject, ObservableObject {
             if let initial { self.apply(spec: initial, to: device) }
             self.forceCenterStageOff()
             self.observeFormatReversion(of: device)
+        }
+    }
+
+    /// 세션 시작에 실패했을 때 연결 화면으로 되돌리고 원인을 배너로 알린다(설계 §9).
+    private func failToStart(_ message: String) {
+        DispatchQueue.main.async {
+            self.returnToConnect()
+            self.errorBanner = message
         }
     }
 
@@ -116,7 +140,13 @@ final class CameraManager: NSObject, ObservableObject {
             let maxRate = candidate.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
             return Int(dims.width) == spec.width && Int(dims.height) == spec.height
                 && maxRate == spec.maxFrameRate
-        }) else { return }
+        }) else {
+            // 일치 포맷이 없으면 activeSpec을 그대로 두면 거짓 상태가 된다(설계 §9).
+            DispatchQueue.main.async {
+                self.errorBanner = "요청한 포맷을 기기가 제공하지 않습니다: \(spec.label)"
+            }
+            return
+        }
         do {
             isApplyingFormat = true
             defer { isApplyingFormat = false }
@@ -156,11 +186,12 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 종료
 
     func returnToConnect() {
-        formatObservation = nil
         selectedDevice = nil
         activeSpec = nil
         phase = .connect
-        sessionQueue.async { [session] in
+        sessionQueue.async { [weak self, session] in
+            // 소유 큐에서 해제한다. 등록도 sessionQueue이므로 순서가 뒤집히지 않는다.
+            self?.formatObservation = nil
             session.beginConfiguration()
             session.inputs.forEach(session.removeInput)
             session.outputs.forEach(session.removeOutput)
