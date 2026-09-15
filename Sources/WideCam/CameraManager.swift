@@ -224,8 +224,17 @@ final class CameraManager: NSObject, ObservableObject {
     /// 메뉴바 구조에서 프리뷰 표면이 둘(팝오버·큰 창)로 늘어 그 창이 더 넓어졌다.
     /// 그래서 세션을 만지는 모든 경로를 sessionQueue 하나로 모은다(FIFO 덕에 부착은
     /// 항상 startRunning() 뒤, 분리는 항상 teardown 뒤로 줄을 선다).
-    func attachPreview(_ layer: AVCaptureVideoPreviewLayer) {
-        sessionQueue.async { [session] in layer.session = session }
+    /// `mirrored`는 호출하는 쪽(메인 큐)에서 읽은 현재 좌우반전 값이다. 세션을 붙이면
+    /// 그 자리에서 연결이 생기므로 미러링도 같은 블록에서 함께 적용한다. 여기서 하지
+    /// 않으면 첫 프레임이 기기 기본값(자동 미러링)으로 그려지고, updateNSView는
+    /// isMirrored가 바뀌지 않는 한 그것을 교정할 기회가 없다.
+    func attachPreview(_ layer: AVCaptureVideoPreviewLayer, mirrored: Bool) {
+        sessionQueue.async { [session] in
+            layer.session = session
+            guard let connection = layer.connection else { return }
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = mirrored
+        }
     }
 
     /// 분리도 같은 이유로 sessionQueue에서 한다. 메인에서 떼면 returnToConnect()의

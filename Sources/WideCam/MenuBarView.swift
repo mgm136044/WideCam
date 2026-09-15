@@ -17,6 +17,8 @@ struct MenuBarView: View {
     let mainWindowHolder: WindowHolder
     /// 이 팝오버가 열려 있다는 사실을 큰 창 쪽에 알리는 공유 플래그.
     let popoverPresence: PopoverPresence
+    /// Wi-Fi 전원 상태. 팝오버가 열려 있는 동안 켜고 꺼도 안내가 따라온다.
+    @ObservedObject private var wifi = WiFiMonitor.shared
     @Environment(\.openWindow) private var openWindow
 
     /// 프리뷰는 4:3 고정 크기다. 팝오버는 창처럼 늘릴 수 없으므로 화각 전체가 들어가는
@@ -88,14 +90,13 @@ struct MenuBarView: View {
                 .font(.headline)
 
             if camera.availableDevices.isEmpty {
-                // 큰 창(ConnectView)과 같은 문장을 쓴다. 두 화면이 같은 상황을 다른
-                // 말로 설명하면 사용자는 다른 문제라고 오해한다.
+                // 큰 창(ConnectView)과 같은 문장을 같은 순서로 쓴다. 두 화면이 같은
+                // 상황을 다른 말로 설명하면 사용자는 다른 문제라고 오해한다.
                 VStack(alignment: .leading, spacing: 6) {
                     // Wi-Fi 꺼짐은 추측이 아니라 실측이고 사용자가 바로 고칠 수 있는
-                    // 원인이다. 그래서 일반 안내보다 위에, 눈에 띄는 색으로 둔다.
-                    // 팝오버가 열릴 때마다 body가 다시 계산되므로 값도 갱신된다.
-                    if ConnectivityHint.isWiFiOff {
-                        Label("Wi-Fi가 꺼져 있습니다 — 켜주세요", systemImage: "wifi.slash")
+                    // 원인이다. 그래서 헤드라인보다 위에, 눈에 띄는 색으로 둔다.
+                    if wifi.isOff {
+                        Label(WiFiMonitor.offMessage, systemImage: "wifi.slash")
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(.orange)
                     }
@@ -104,6 +105,7 @@ struct MenuBarView: View {
                     Label("맥과 아이폰이 같은 Apple 계정으로 로그인되어 있어야 합니다",
                           systemImage: "person.circle")
                     Label("양쪽 모두 Wi-Fi와 블루투스가 켜져 있어야 합니다", systemImage: "wifi")
+                    Label("USB 케이블로 연결하면 가장 안정적입니다", systemImage: "cable.connector")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
