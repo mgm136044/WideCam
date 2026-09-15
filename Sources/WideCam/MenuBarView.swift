@@ -55,11 +55,13 @@ struct MenuBarView: View {
         .frame(width: previewWidth + 24)
         .onAppear {
             popoverPresence.isOpen = true
-            // 팝오버를 여는 행동 자체를 "카메라 켜기"로 본다. 메뉴바 앱에서 아이콘을
-            // 누른 뒤 기기를 한 번 더 고르게 하면 클릭이 두 번이 된다.
-            if camera.phase == .connect, let device = camera.availableDevices.first {
-                camera.select(device: device)
-            }
+            autoStartIfNeeded()
+        }
+        // 기기 열거가 백그라운드로 옮겨진 뒤로 목록이 팝오버보다 늦게 도착할 수 있다
+        // (실행 직후 바로 아이콘을 누르면 그 순간 목록이 비어 있다). 그때 onAppear는
+        // 이미 지나갔으므로 목록이 도착하는 순간에도 같은 판정을 한 번 더 한다.
+        .onChange(of: camera.availableDevices) { _, _ in
+            autoStartIfNeeded()
         }
         .onDisappear {
             popoverPresence.isOpen = false
@@ -227,6 +229,25 @@ struct MenuBarView: View {
             .buttonStyle(.glass)
             .disabled(camera.isRecording)
             .help(camera.isRecording ? "녹화를 정지한 뒤에 종료할 수 있습니다" : "WideCam 종료")
+    }
+
+    /// 팝오버가 열려 있고 아직 연결 화면이면 첫 기기로 카메라를 켠다. 팝오버를 여는
+    /// 행동 자체를 "카메라 켜기"로 보기 때문이다 — 아이콘을 누른 뒤 기기를 한 번 더
+    /// 고르게 하면 클릭이 두 번이 된다.
+    ///
+    /// 여는 순간과 목록이 뒤늦게 도착한 순간이 같은 조건을 써야 하므로 한 곳에 둔다
+    /// (두 군데에 같은 if를 쓰면 한쪽만 고쳐질 수 있다).
+    ///
+    /// 중복 선택은 `phase` 가드가 막는다. `select(device:)`는 권한이 이미 있으면 메인 큐에서
+    /// 곧바로 `phase = .capturing`으로 바꾸므로 두 번째 호출은 이 guard에서 걸러진다.
+    ///
+    /// `popoverPresence.isOpen`을 함께 보는 이유: 팝오버가 닫힌 뒤에도 이 뷰가 살아 있을
+    /// 수 있어, 그때 기기가 연결되면 화면도 없이 카메라가 켜질 수 있다.
+    private func autoStartIfNeeded() {
+        guard popoverPresence.isOpen,
+              camera.phase == .connect,
+              let device = camera.availableDevices.first else { return }
+        camera.select(device: device)
     }
 
     // MARK: - 큰 창
