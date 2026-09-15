@@ -2,6 +2,9 @@ import SwiftUI
 
 struct CaptureView: View {
     @ObservedObject var camera: CameraManager
+    /// 전체화면 버튼이 참조할 자기 창. NSApp.keyWindow는 클릭 시점에 nil일 수 있어
+    /// 창을 직접 붙잡아 둔다(@State 미사용 — 이 머신에서 매크로가 컴파일되지 않는다).
+    @StateObject private var windowHolder = WindowHolder()
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -14,6 +17,9 @@ struct CaptureView: View {
             toolbar
                 .padding(.bottom, 24)
         }
+        // 창 참조를 얻고 .fullScreenPrimary를 켜기 위한 크기 0의 숨은 브리지.
+        // 레이아웃과 히트 테스트에 영향을 주지 않는다.
+        .background(WindowAccessor(holder: windowHolder).frame(width: 0, height: 0))
         .overlay(alignment: .top) {
             if let message = camera.errorBanner {
                 HStack(spacing: 12) {
@@ -116,7 +122,11 @@ struct CaptureView: View {
                 .help("좌우반전 (프리뷰에만 적용)")
 
                 Button {
-                    NSApp.keyWindow?.toggleFullScreen(nil)
+                    // keyWindow가 nil인 순간(패널·메뉴가 키를 가진 경우 등)에도 동작해야
+                    // 하므로 자기 창 → keyWindow → 보이는 첫 창 순으로 폴백한다.
+                    (windowHolder.window
+                        ?? NSApp.keyWindow
+                        ?? NSApp.windows.first { $0.isVisible })?.toggleFullScreen(nil)
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
