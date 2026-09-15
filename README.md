@@ -23,6 +23,7 @@
 
 - **메뉴바 상주**: 아이콘을 누르면 라이브 프리뷰 팝오버가 뜬다. 사진 촬영, 녹화 시작/정지, 큰 창 열기, 종료. 팝오버를 열면 카메라가 켜지고 닫으면 꺼진다(녹화 중이거나 큰 창이 열려 있으면 유지).
 - **큰 창**: 자리가 필요한 조작을 모아뒀다. 해상도·프레임레이트 선택, 좌우반전(프리뷰에만 적용되고 저장물은 비반전), 전체화면, 마지막 저장물 Finder에서 보기.
+- **전체화면 자동 숨김**: 전체화면에서 2.5초 동안 아무 조작이 없으면 툴바와 상태 표시가 사라지고 마우스 커서도 감춰진다. 마우스를 움직이거나 툴바를 클릭하면 바로 돌아온다. 창 모드에서는 숨기지 않는다. **녹화 중에는 숨기지 않고**(녹화하고 있다는 사실이 화면에서 사라지면 안 된다), 센터 스테이지 해제 실패 표시도 예외로 계속 남는다.
 - **화각 강제**: 기본값은 4:3 최대 해상도에 30fps 이상 중 가장 낮은 fps. 센터 스테이지 해제에 실패하면 "화각이 좁을 수 있습니다"를 화면에 그대로 띄운다(조용한 실패 금지).
 - **프리뷰 레터박스**: `videoGravity = .resizeAspect`. 창 비율이 4:3이 아니어도 화각을 잘라내지 않는다.
 - **사진·영상**: 사진은 HEIC(HEVC 코덱을 못 쓰는 환경에서는 JPEG로 내려간다), 영상은 .mov / HEVC에 아이폰 마이크 소리를 담는다.
@@ -60,7 +61,7 @@ error: external macro implementation type 'TestingMacros.TestDeclarationMacro' c
        for macro 'Test'; plugin for module 'TestingMacros' not found
 ```
 
-원인은 `swiftbuild` 백엔드가 `plugins/testing/` 하위에 있는 이 플러그인을 비결정적으로 놓치는 것이다. 래퍼는 `-Xswiftc -load-plugin-library`로 플러그인 경로를 직접 박아 넣어 그 탐색 단계를 없앤다(실측 9/9 통과). 플래그를 `Package.swift`에 넣지 않은 이유는 `.unsafeFlags`가 되어 매니페스트를 오염시키고 경로가 머신 종속 절대경로이기 때문이다.
+원인은 `swiftbuild` 백엔드가 `plugins/testing/` 하위에 있는 이 플러그인을 비결정적으로 놓치는 것이다. 래퍼는 `-Xswiftc -load-plugin-library`로 플러그인 경로를 직접 박아 넣어 그 탐색 단계를 없앤다(9회 연속 통과). 플래그를 `Package.swift`에 넣지 않은 이유는 `.unsafeFlags`가 되어 매니페스트를 오염시키고 경로가 머신 종속 절대경로이기 때문이다.
 
 현재 테스트는 8개다. 포맷 기본값 선택 로직과 저장 경로·파일명 생성처럼 카메라 없이 검증할 수 있는 순수 로직을 덮는다.
 
@@ -96,8 +97,9 @@ widecam_app/
 │   ├── ConnectView.swift       # 연결 화면 (기기 목록)
 │   ├── CaptureView.swift       # 촬영 화면 + 글라스 툴바
 │   ├── PreviewLayerView.swift  # AVCaptureVideoPreviewLayer NSViewRepresentable
-│   ├── ConnectivityHint.swift  # 기기 미발견 원인 실측 (CoreWLAN Wi-Fi 전원)
+│   ├── WiFiMonitor.swift       # 맥 Wi-Fi 전원 감시 (CoreWLAN, 기기 미발견 원인 안내)
 │   ├── WindowAccessor.swift    # SwiftUI 뷰 ↔ 자기 NSWindow 브리지 (전체화면·창 추적)
+│   ├── FormatPolicy.swift      # 노출 포맷 → 목록·기본값 결정 (순수 로직)
 │   └── MediaStore.swift        # 저장 경로·파일명 생성 (순수 로직)
 ├── Tests/WideCamTests/         # 포맷 선택·파일명 로직 단위 테스트
 ├── Resources/AppIcon.icns      # 앱 아이콘 (Info.plist는 deploy.sh가 생성)
@@ -113,7 +115,6 @@ widecam_app/
 
 - `docs/superpowers/specs/2026-09-15-widecam-design.md` — 설계 문서. API 실측 결과, 화각 강제 로직, 범위 밖 항목
 - `docs/superpowers/plans/2026-09-15-widecam.md` — 구현 계획서
-- `.superpowers/sdd/2026-09-15-widecam/` — 태스크별 작업 보고와 리뷰 기록
 
 ## 라이선스
 
