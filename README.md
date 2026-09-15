@@ -61,7 +61,7 @@ error: external macro implementation type 'TestingMacros.TestDeclarationMacro' c
        for macro 'Test'; plugin for module 'TestingMacros' not found
 ```
 
-원인은 `swiftbuild` 백엔드가 `plugins/testing/` 하위에 있는 이 플러그인을 비결정적으로 놓치는 것이다. 래퍼는 `-Xswiftc -load-plugin-library`로 플러그인 경로를 직접 박아 넣어 그 탐색 단계를 없앤다(9회 연속 통과). 플래그를 `Package.swift`에 넣지 않은 이유는 `.unsafeFlags`가 되어 매니페스트를 오염시키고 경로가 머신 종속 절대경로이기 때문이다.
+원인은 `swiftbuild` 백엔드가 `plugins/testing/` 하위에 있는 이 플러그인을 비결정적으로 놓치는 것이다. 래퍼는 `-Xswiftc -load-plugin-library`로 플러그인 경로를 직접 지정해 그 탐색 단계를 없앤다(9회 연속 통과). 경로는 고정하지 않고 `xcode-select -p`로 활성 툴체인에서 유도하며, 그 자리에 dylib이 없으면(Xcode만 설치한 환경 등) 안내를 남기고 플래그 없이 `swift test`로 넘어간다. 플래그를 `Package.swift`에 넣지 않은 이유는 `.unsafeFlags`가 되어 매니페스트를 오염시키고 경로가 머신마다 다르기 때문이다.
 
 현재 테스트는 8개다. 포맷 기본값 선택 로직과 저장 경로·파일명 생성처럼 카메라 없이 검증할 수 있는 순수 로직을 덮는다.
 

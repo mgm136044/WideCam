@@ -37,6 +37,21 @@ final class CameraManager: NSObject, ObservableObject {
         String(format: "%02d:%02d", recordingSeconds / 60, recordingSeconds % 60)
     }
 
+    /// 녹화 시작 요청이 진행 중인지. 메인 큐에서만 읽고 쓴다(판정 시점에만 읽으므로
+    /// @Published로 두지 않는다 — 발행하면 녹화를 누를 때마다 화면이 재평가된다).
+    ///
+    /// 첫 실행에서 녹화를 누르면 마이크 권한 대화상자가 뜨고, 그 대화상자가 팝오버를
+    /// 닫는다. 그때 팝오버의 자동 정지 판정은 "녹화 중도 아니고 큰 창도 없다"고 보고
+    /// 세션을 내려버렸다. 사용자가 "허용"을 눌러도 녹화할 세션이 남아 있지 않아 아무것도
+    /// 기록되지 않았고, 그 사실을 알리는 배너마저 팝오버를 다시 열 때의 자동 시작이
+    /// 지워버렸다. 그래서 이 구간을 녹화 중과 똑같이 취급한다 — 세션을 놓지 않는다.
+    ///
+    /// **불변식**: 세우는 곳은 `startRecording()` 하나뿐이고, 내리는 곳은 녹화 시작
+    /// 성공(`didStartRecordingTo`), 녹화 종료(`didFinishRecordingTo` — 시작 직후 실패한
+    /// 경우도 이 콜백으로 온다), `beginRecording()`의 모든 실패 반환, 그리고
+    /// `returnToConnect()`다. 한 곳이라도 빠지면 플래그가 남아 카메라를 영구히 붙잡는다.
+    private(set) var isRecordingStartPending = false
+
     /// "지금 세션을 보여줄 화면이 있는가"를 묻는 훅. 앱 조립부(WideCamApp)가 주입하고
     /// 메인 큐에서만 부른다. nil이면(주입 전·테스트) 항상 켠다. 뷰 계층을 모른 채로
     /// 물어보기만 하려고 클로저로 받는다.
@@ -350,8 +365,11 @@ final class CameraManager: NSObject, ObservableObject {
                 self.reforceAttempts += 1
                 guard self.reforceAttempts <= Self.maxReforceAttempts else {
                     DispatchQueue.main.async {
-                        self.errorBanner =
+                        let message =
                             "기기가 \(target.label)을 유지하지 않아 재설정을 멈췄습니다 — 센터 스테이지가 켜져 있는지 확인해주세요."
+                        // 포맷이 계속 흔들리는 기기에서는 이 경로가 반복해서 불린다.
+                        // @Published는 같은 값에도 발행하므로 값이 바뀔 때만 쓴다.
+                        if self.errorBanner != message { self.errorBanner = message }
                     }
                     return
                 }
@@ -462,6 +480,9 @@ final class CameraManager: NSObject, ObservableObject {
             errorBanner = Self.noCameraMessage
             return
         }
+        // 여기서부터 "녹화 시작 진행 중"이다. 권한 대화상자가 팝오버를 닫아도 자동 정지
+        // 판정이 세션을 내리지 않게 한다(isRecordingStartPending 주석의 불변식 참고).
+        isRecordingStartPending = true
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             beginRecording(audioFrom: camera)
@@ -485,18 +506,27 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// `audioFrom`이 nil이면 소리 없이 녹화한다. 부착과 녹화 시작을 같은 sessionQueue
     /// 블록에 넣어 순서를 보장한다 — 부착이 늦게 실행되면 첫 구간의 소리가 빠진다.
+    ///
+    /// 모든 실패 반환은 `finishRecordingStart()`를 거친다(성공 경로는 녹화 델리게이트가
+    /// 내린다). 하나라도 빠지면 플래그가 남아 카메라를 영구히 붙잡는다.
     private func beginRecording(audioFrom camera: AVCaptureDevice?) {
         sessionQueue.async { [weak self] in
-            guard let self, !self.movieOutput.isRecording else { return }
+            guard let self else { return }
+            guard !self.movieOutput.isRecording else {
+                self.finishRecordingStart()
+                return
+            }
             // 마이크 부착보다 먼저 본다. 녹화를 못 하는 상황에 마이크만 붙이면 녹화도
             // 안 하면서 마이크 사용 표시가 켜진 채 남는다.
             guard self.canStartRecording else {
+                self.finishRecordingStart()
                 DispatchQueue.main.async { self.errorBanner = Self.noCameraMessage }
                 return
             }
             do {
                 try self.mediaStore.ensureDirectoryExists()
             } catch {
+                self.finishRecordingStart()
                 DispatchQueue.main.async {
                     self.errorBanner = "저장 폴더 생성 실패: \(error.localizedDescription)"
                 }
@@ -508,11 +538,19 @@ final class CameraManager: NSObject, ObservableObject {
             // 없는 예외로 프로세스가 죽는다. 어긋났으면 붙인 마이크도 되돌린다.
             guard self.canStartRecording else {
                 self.detachAudioInput()
+                self.finishRecordingStart()
                 DispatchQueue.main.async { self.errorBanner = Self.noCameraMessage }
                 return
             }
             self.movieOutput.startRecording(to: self.mediaStore.movieURL(), recordingDelegate: self)
         }
+    }
+
+    /// 녹화 시작 진행 표시를 내린다. 내리는 경로 일부가 sessionQueue에 있으므로 항상
+    /// 메인 큐로 넘긴다(메인에서 불러도 한 턴 뒤에 내려가며, 그 사이의 판정은 "진행 중"
+    /// 으로 보는 쪽이 안전하다 — 세션을 놓지 않는 쪽이다).
+    private func finishRecordingStart() {
+        DispatchQueue.main.async { self.isRecordingStartPending = false }
     }
 
     func stopRecording() {
@@ -544,6 +582,9 @@ final class CameraManager: NSObject, ObservableObject {
         // 녹화 표시도 여기서 끝낸다. 정지 델리게이트가 뒤늦게 도착해 같은 값을 다시
         // 써도 무해하고, 콜백이 오지 않는 경우에도 타이머가 남아 돌지 않는다.
         isRecording = false
+        // 세션을 내리는 중이므로 진행 중이던 녹화 시작 요청도 끝난 것으로 본다. 남겨
+        // 두면 다음 자동 정지 판정이 영구히 "진행 중"으로 읽어 카메라를 놓지 않는다.
+        isRecordingStartPending = false
         recordingTimer?.invalidate()
         recordingTimer = nil
         recordingStartDate = nil
@@ -617,6 +658,8 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
         // 타이머 블록이 self를 약하게 잡으므로(참조 순환 방지) 바깥 클로저의 강한 캡처도
         // 명시한다. 암묵 캡처와 섞이면 컴파일러가 경고한다.
         DispatchQueue.main.async { [self] in
+            // 실제로 시작됐으니 진행 표시를 내린다(이제 isRecording이 세션을 지킨다).
+            self.isRecordingStartPending = false
             self.isRecording = true
             self.recordingSeconds = 0
             self.recordingStartDate = Date()
@@ -638,6 +681,9 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection], error: Error?) {
         DispatchQueue.main.async {
+            // 시작 직후 실패해 didStartRecordingTo 없이 이 콜백만 오는 경우까지 덮는다
+            // (불변식: 진행 표시를 내리지 않는 종료 경로가 있으면 안 된다).
+            self.isRecordingStartPending = false
             self.isRecording = false
             self.recordingTimer?.invalidate()
             self.recordingTimer = nil
