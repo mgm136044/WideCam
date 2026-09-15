@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 
@@ -17,6 +18,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isCenterStageForcedOff = false
     @Published var isMirrored = false
     @Published private(set) var errorBanner: String?
+    @Published private(set) var lastSavedURL: URL?
+    @Published private(set) var flashPulse = 0
 
     let session = AVCaptureSession()
     let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
@@ -28,6 +31,11 @@ final class CameraManager: NSObject, ObservableObject {
     // 아래 두 변수도 sessionQueue에서만 접근한다.
     private var targetSpec: FormatSpec?
     private var isApplyingFormat = false
+
+    private let photoOutput = AVCapturePhotoOutput()
+    private let mediaStore = MediaStore()
+    // sessionQueue에서 쓰고, 그 뒤에 도착하는 델리게이트 콜백에서만 읽는다.
+    private var usesHEVCPhotos = false
 
     override init() {
         super.init()
@@ -109,6 +117,10 @@ final class CameraManager: NSObject, ObservableObject {
                 return
             }
             self.session.addInput(input)
+
+            if self.session.canAddOutput(self.photoOutput) {
+                self.session.addOutput(self.photoOutput)
+            }
             self.session.commitConfiguration()
             self.session.startRunning()
 
@@ -183,6 +195,28 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - 사진 촬영
+
+    func capturePhoto() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let settings: AVCapturePhotoSettings
+            if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+                settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+                self.usesHEVCPhotos = true
+            } else {
+                settings = AVCapturePhotoSettings()
+                self.usesHEVCPhotos = false
+            }
+            self.photoOutput.capturePhoto(with: settings, delegate: self)
+        }
+    }
+
+    func revealLastSaved() {
+        guard let url = lastSavedURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     // MARK: - 종료
 
     func returnToConnect() {
@@ -202,5 +236,31 @@ final class CameraManager: NSObject, ObservableObject {
 
     func clearError() {
         errorBanner = nil
+    }
+}
+
+extension CameraManager: AVCapturePhotoCaptureDelegate {
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        let fileExtension = usesHEVCPhotos ? "heic" : "jpg"
+        DispatchQueue.main.async {
+            if let error {
+                self.errorBanner = "사진 촬영 실패: \(error.localizedDescription)"
+                return
+            }
+            guard let data = photo.fileDataRepresentation() else {
+                self.errorBanner = "사진 데이터를 만들지 못했습니다."
+                return
+            }
+            let url = self.mediaStore.photoURL(fileExtension: fileExtension)
+            do {
+                try self.mediaStore.ensureDirectoryExists()
+                try data.write(to: url)
+                self.lastSavedURL = url
+                self.flashPulse += 1
+            } catch {
+                self.errorBanner = "사진 저장 실패: \(error.localizedDescription)"
+            }
+        }
     }
 }
