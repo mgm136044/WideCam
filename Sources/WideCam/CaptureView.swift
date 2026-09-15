@@ -66,6 +66,25 @@ struct CaptureView: View {
                 .controlSize(.large)
                 .help("사진 촬영")
 
+                Button {
+                    if camera.isRecording { camera.stopRecording() }
+                    else { camera.startRecording() }
+                } label: {
+                    Image(systemName: camera.isRecording ? "stop.fill" : "record.circle")
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .help(camera.isRecording ? "녹화 정지" : "녹화 시작")
+
+                if camera.isRecording {
+                    Text(String(format: "%02d:%02d",
+                                camera.recordingSeconds / 60, camera.recordingSeconds % 60))
+                        .monospacedDigit()
+                        .foregroundStyle(.red)
+                }
+
                 Picker("포맷", selection: Binding(
                     get: { camera.activeSpec },
                     set: { if let spec = $0 { camera.apply(spec: spec) } }

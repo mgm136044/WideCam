@@ -20,6 +20,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var errorBanner: String?
     @Published private(set) var lastSavedURL: URL?
     @Published private(set) var flashPulse = 0
+    @Published private(set) var isRecording = false
+    @Published private(set) var recordingSeconds = 0
 
     let session = AVCaptureSession()
     let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
@@ -33,9 +35,12 @@ final class CameraManager: NSObject, ObservableObject {
     private var isApplyingFormat = false
 
     private let photoOutput = AVCapturePhotoOutput()
+    private let movieOutput = AVCaptureMovieFileOutput()
     private let mediaStore = MediaStore()
     // sessionQueue에서 쓰고, 그 뒤에 도착하는 델리게이트 콜백에서만 읽는다.
     private var usesHEVCPhotos = false
+    // 메인 큐에서만 만들고 무효화한다(녹화 델리게이트 콜백이 메인 큐로 넘긴다).
+    private var recordingTimer: Timer?
 
     override init() {
         super.init()
@@ -128,6 +133,18 @@ final class CameraManager: NSObject, ObservableObject {
                     self.errorBanner = "사진 출력을 세션에 추가하지 못했습니다."
                 }
             }
+
+            // 영상 출력도 같은 원칙(설계 §9): 실패는 배너로 알리지만 세션은 되돌리지
+            // 않는다. 녹화 크래시는 startRecording()의 연결 가드가 막아준다.
+            if self.session.canAddOutput(self.movieOutput) {
+                self.session.addOutput(self.movieOutput)
+            } else {
+                DispatchQueue.main.async {
+                    self.errorBanner = "영상 출력을 세션에 추가하지 못했습니다."
+                }
+            }
+            self.attachAudioInput(pairedWith: device)
+
             self.session.commitConfiguration()
             self.session.startRunning()
 
@@ -135,6 +152,18 @@ final class CameraManager: NSObject, ObservableObject {
             // 반드시 시작 "후"에 포맷을 강제해야 1920x1440이 유지된다.
             if let initial { self.apply(spec: initial, to: device) }
             self.forceCenterStageOff()
+
+            // 코덱 설정은 연결이 만들어진 뒤(= startRunning 이후)에만 가능하다.
+            // 계획서의 availableVideoCodecTypes 사전 확인은 이 SDK에서 쓸 수 없다
+            // (API_UNAVAILABLE(macos), 대체 후보인 supportedOutputSettingsKeys-
+            // ForConnection:도 동일). macOS 26이 도는 기기는 모두 HEVC 하드웨어
+            // 인코딩을 지원하고, 설정이 받아들여지지 않아도 파일 자체는 정상
+            // 기록되므로 조건 없이 지정한다.
+            if let connection = self.movieOutput.connection(with: .video) {
+                self.movieOutput.setOutputSettings(
+                    [AVVideoCodecKey: AVVideoCodecType.hevc], for: connection)
+            }
+
             self.observeFormatReversion(of: device)
         }
     }
@@ -231,6 +260,58 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - 영상 녹화
+
+    /// 아이폰(연속성 카메라)의 마이크를 찾아 연결한다. uniqueID 앞자리가 카메라와 같으면
+    /// 같은 기기의 마이크다. 없으면 시스템 기본 마이크로 대체한다.
+    /// sessionQueue에서, 세션 구성(beginConfiguration) 중에만 호출한다.
+    private func attachAudioInput(pairedWith camera: AVCaptureDevice) {
+        let mics = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+        let prefix = String(camera.uniqueID.prefix(8))
+        let mic = mics.first { $0.uniqueID.hasPrefix(prefix) }
+            ?? AVCaptureDevice.default(for: .audio)
+        guard let mic,
+              let input = try? AVCaptureDeviceInput(device: mic),
+              session.canAddInput(input) else {
+            DispatchQueue.main.async { self.errorBanner = "마이크를 찾지 못해 소리 없이 녹화됩니다." }
+            return
+        }
+        session.addInput(input)
+    }
+
+    func startRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.movieOutput.isRecording else { return }
+            // capturePhoto()와 같은 이유의 가드다. 활성·사용 가능한 비디오 연결이 없거나
+            // 세션이 멈춘 상태에서 startRecording(to:)을 호출하면 Swift에서 잡을 수 없는
+            // NSException("no active and enabled connection")이 난다.
+            guard let connection = self.movieOutput.connection(with: .video),
+                  connection.isActive, connection.isEnabled, self.session.isRunning else {
+                DispatchQueue.main.async {
+                    self.errorBanner = "카메라가 연결되어 있지 않아 녹화할 수 없습니다."
+                }
+                return
+            }
+            do {
+                try self.mediaStore.ensureDirectoryExists()
+            } catch {
+                DispatchQueue.main.async {
+                    self.errorBanner = "저장 폴더 생성 실패: \(error.localizedDescription)"
+                }
+                return
+            }
+            self.movieOutput.startRecording(to: self.mediaStore.movieURL(), recordingDelegate: self)
+        }
+    }
+
+    func stopRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.movieOutput.isRecording else { return }
+            self.movieOutput.stopRecording()
+        }
+    }
+
     func revealLastSaved() {
         guard let url = lastSavedURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -239,6 +320,9 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 종료
 
     func returnToConnect() {
+        // 세션을 허무는 블록보다 먼저 sessionQueue에 넣어야(FIFO) 출력이 제거되기 전에
+        // 녹화가 정상 종료되고 파일이 마무리된다.
+        stopRecording()
         selectedDevice = nil
         activeSpec = nil
         phase = .connect
@@ -280,6 +364,37 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
             } catch {
                 self.errorBanner = "사진 저장 실패: \(error.localizedDescription)"
             }
+        }
+    }
+}
+
+extension CameraManager: AVCaptureFileOutputRecordingDelegate {
+    func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL,
+                    from connections: [AVCaptureConnection]) {
+        // 타이머 블록이 self를 약하게 잡으므로(참조 순환 방지) 바깥 클로저의 강한 캡처도
+        // 명시한다. 암묵 캡처와 섞이면 컴파일러가 경고한다.
+        DispatchQueue.main.async { [self] in
+            self.isRecording = true
+            self.recordingSeconds = 0
+            self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.recordingSeconds += 1
+            }
+        }
+    }
+
+    // 이 SDK가 요구하는 시그니처는 connections까지 받는 4인자 형태다
+    // (captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:).
+    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
+                    from connections: [AVCaptureConnection], error: Error?) {
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.recordingTimer?.invalidate()
+            self.recordingTimer = nil
+            // 기기 이탈로 녹화가 끊겨도 그 시점까지의 파일은 저장된다 (설계 §9).
+            if let error {
+                self.errorBanner = "녹화가 중단되었습니다: \(error.localizedDescription)"
+            }
+            self.lastSavedURL = outputFileURL
         }
     }
 }
