@@ -13,6 +13,10 @@ import SwiftUI
 /// 두지 않고 camera의 @Published만 구독한다.
 struct MenuBarView: View {
     @ObservedObject var camera: CameraManager
+    /// 큰 창의 NSWindow. 창이 세션을 쓰는 중인지 추정하지 않고 직접 본다.
+    let mainWindowHolder: WindowHolder
+    /// 이 팝오버가 열려 있다는 사실을 큰 창 쪽에 알리는 공유 플래그.
+    let popoverPresence: PopoverPresence
     @Environment(\.openWindow) private var openWindow
 
     /// 프리뷰는 4:3 고정 크기다. 팝오버는 창처럼 늘릴 수 없으므로 화각 전체가 들어가는
@@ -48,6 +52,7 @@ struct MenuBarView: View {
         .padding(12)
         .frame(width: previewWidth + 24)
         .onAppear {
+            popoverPresence.isOpen = true
             // 팝오버를 여는 행동 자체를 "카메라 켜기"로 본다. 메뉴바 앱에서 아이콘을
             // 누른 뒤 기기를 한 번 더 고르게 하면 클릭이 두 번이 된다.
             if camera.phase == .connect, let device = camera.availableDevices.first {
@@ -55,6 +60,7 @@ struct MenuBarView: View {
             }
         }
         .onDisappear {
+            popoverPresence.isOpen = false
             // 팝오버를 닫으면 카메라를 놓아(녹색 점 소등) 쓰지 않는 동안 아이폰
             // 카메라를 점유하지 않는다. 단 녹화 중이거나 큰 창이 세션을 쓰는 중이면
             // 유지한다.
@@ -63,9 +69,12 @@ struct MenuBarView: View {
             // 팝오버를 닫으므로 onDisappear가 창이 화면에 올라오기 전에 불릴 수 있다.
             // 한 턴 뒤에 보면 그 사이에 창이 등록될 기회가 생긴다.
             DispatchQueue.main.async {
+                // 창을 직접 본다. 예전에는 "제목줄 있는 NSPanel 아닌 보이는 창"으로
+                // 추정했는데, 상태 복원으로 되살아난 창이나 앱의 다른 제목줄 창까지
+                // 걸려 판정이 영구히 참으로 굳을 수 있었다.
                 guard camera.phase == .capturing,
                       !camera.isRecording,
-                      !isMainWindowVisible else { return }
+                      mainWindowHolder.window?.isVisible != true else { return }
                 camera.returnToConnect()
             }
         }
@@ -112,6 +121,21 @@ struct MenuBarView: View {
             }
             .frame(width: previewWidth, height: previewHeight)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            // 해제 실패를 숨기면 사용자는 좁아진 화각의 원인을 알 수 없다(설계 §9).
+            // 큰 창의 statusBadge와 같은 사실을 같은 문장으로 말한다.
+            if camera.centerStageState == .failed {
+                Label("센터 스테이지 해제 실패 — 화각이 좁을 수 있습니다",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let spec = camera.activeSpec {
+                Text(spec.label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 8) {
                 Button {
@@ -199,19 +223,12 @@ struct MenuBarView: View {
         // (API_TO_BE_DEPRECATED), 다른 앱이 활성인 상태에서 더 확실하게 올라온다.
         NSApp.activate(ignoringOtherApps: true)
     }
+}
 
-    /// 큰 창이 지금 화면에 있는지. SwiftUI `Window(id: "main")`이 런타임에 어떤
-    /// NSWindow.identifier를 갖는지는 실행 없이 확인할 수 없으므로(이 작업은 실행
-    /// 금지) identifier에 의존하지 않는다. 대신 "제목줄이 있는 일반 창이 보이는가"로
-    /// 판단한다 — 메뉴바 팝오버와 상태 아이템 창은 NSPanel이고 제목줄이 없으므로
-    /// 이 조건에서 빠진다. 판정이 틀리는 쪽의 비용은 비대칭이다: 참을 거짓으로 보면
-    /// 큰 창이 연결 화면으로 되돌아갈 뿐이고(기기를 다시 고르면 복구된다), 거짓을
-    /// 참으로 보면 카메라가 계속 점유된다.
-    private var isMainWindowVisible: Bool {
-        NSApp.windows.contains { window in
-            window.isVisible
-                && !(window is NSPanel)
-                && window.styleMask.contains(.titled)
-        }
-    }
+/// 팝오버가 열려 있는지를 큰 창 쪽과 나눠 갖는 상자. 큰 창이 닫힐 때 카메라를 놓아도
+/// 되는지 판단하는 데만 쓴다. 이 값으로 뷰를 다시 그릴 일이 없고(판정 시점에 읽기만
+/// 한다) @Published를 달면 팝오버가 열고 닫힐 때마다 큰 창이 불필요하게 갱신되므로
+/// 일부러 평범한 프로퍼티로 둔다. 메인 큐에서만 읽고 쓴다.
+final class PopoverPresence: ObservableObject {
+    var isOpen = false
 }

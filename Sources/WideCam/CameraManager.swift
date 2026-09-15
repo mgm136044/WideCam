@@ -37,6 +37,11 @@ final class CameraManager: NSObject, ObservableObject {
         String(format: "%02d:%02d", recordingSeconds / 60, recordingSeconds % 60)
     }
 
+    /// "지금 세션을 보여줄 화면이 있는가"를 묻는 훅. 앱 조립부(WideCamApp)가 주입하고
+    /// 메인 큐에서만 부른다. nil이면(주입 전·테스트) 항상 켠다. 뷰 계층을 모른 채로
+    /// 물어보기만 하려고 클로저로 받는다.
+    var isPresentationReady: (() -> Bool)?
+
     let session = AVCaptureSession()
     let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
 
@@ -99,8 +104,16 @@ final class CameraManager: NSObject, ObservableObject {
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 DispatchQueue.main.async {
-                    if granted { self?.start(device: device) }
-                    else { self?.phase = .permissionDenied }
+                    guard let self else { return }
+                    guard granted else {
+                        self.phase = .permissionDenied
+                        return
+                    }
+                    // 권한 대화상자는 팝오버를 닫아버린다. 그 상태에서 세션을 켜면
+                    // 보여줄 화면 없이 카메라만 켜진 채(녹색 점) 남는다. .connect에
+                    // 머물러 있으면 다음 팝오버 열기의 자동 시작이 화면과 함께 켠다.
+                    guard self.isPresentationReady?() ?? true else { return }
+                    self.start(device: device)
                 }
             }
         default:
