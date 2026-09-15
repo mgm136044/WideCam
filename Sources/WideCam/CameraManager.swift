@@ -207,9 +207,13 @@ final class CameraManager: NSObject, ObservableObject {
     func capturePhoto() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            // 출력이 세션에서 떨어진 뒤(뒤로가기 직후 등) 도착한 탭은 활성 연결이 없어
-            // capturePhoto()가 NSException을 던진다 — Swift에서 잡을 수 없으므로 미리 막는다.
-            guard self.photoOutput.connection(with: .video) != nil else {
+            // 활성·사용 가능한 비디오 연결이 없거나 세션이 멈춘 상태에서 capturePhoto()를
+            // 호출하면 "No active and enabled video connection" NSException이 난다. Swift에서
+            // 잡을 수 없으므로 연결의 존재만이 아니라 활성·사용 가능 여부와 세션 실행 여부까지
+            // 본다. 뒤로가기 직후 도착한 탭, 그리고 기기가 물리적으로 빠졌지만 연결 끊김
+            // 알림이 아직 도착하지 않아 연결 객체만 남은 경우가 여기서 걸린다.
+            guard let connection = self.photoOutput.connection(with: .video),
+                  connection.isActive, connection.isEnabled, self.session.isRunning else {
                 DispatchQueue.main.async {
                     self.errorBanner = "카메라가 연결되어 있지 않아 촬영할 수 없습니다."
                 }
