@@ -24,6 +24,14 @@ import Testing
     #expect(FormatPolicy.defaultSpec(in: specs) == FormatSpec(width: 1920, height: 1080, maxFrameRate: 30))
 }
 
+@Test func 기본값_선택은_입력_순서와_무관하다() {
+    let unsorted = [
+        FormatSpec(width: 1920, height: 1440, maxFrameRate: 60),
+        FormatSpec(width: 1920, height: 1440, maxFrameRate: 30),
+    ]
+    #expect(FormatPolicy.defaultSpec(in: unsorted) == FormatSpec(width: 1920, height: 1440, maxFrameRate: 30))
+}
+
 @Test func 라벨은_해상도_비율_fps를_포함한다() {
     let spec = FormatSpec(width: 1920, height: 1440, maxFrameRate: 60)
     #expect(spec.label == "1920×1440 · 4:3 · 최대 60fps")
