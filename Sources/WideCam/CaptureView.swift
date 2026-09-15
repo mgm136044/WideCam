@@ -93,8 +93,7 @@ struct CaptureView: View {
                 .help(camera.isRecording ? "녹화 정지" : "녹화 시작")
 
                 if camera.isRecording {
-                    Text(String(format: "%02d:%02d",
-                                camera.recordingSeconds / 60, camera.recordingSeconds % 60))
+                    Text(camera.recordingClock)
                         .monospacedDigit()
                         .foregroundStyle(.red)
                 }

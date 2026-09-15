@@ -22,10 +22,24 @@ struct WideCamApp: App {
             }
             .frame(minWidth: 720, minHeight: 560)
         }
+
+        // 메뉴바 상주. 위 Window와 같은 camera를 공유하므로 세션은 하나다. 팝오버는
+        // 켜고·찍고·끄는 일만 하고, 전체화면·해상도·좌우반전은 큰 창에 남긴다.
+        // .window 스타일은 메뉴처럼 항목만 나열하는 대신 임의의 SwiftUI 뷰(라이브
+        // 프리뷰)를 띄울 수 있게 한다.
+        MenuBarExtra("WideCam", systemImage: "iphone.rear.camera") {
+            MenuBarView(camera: camera)
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 
 struct PermissionDeniedView: View {
+    /// 팝오버(MenuBarView)도 같은 곳을 열어야 한다. 문자열을 두 벌 두면 한쪽만
+    /// 고쳐졌을 때 서로 다른 설정 패널이 열린다.
+    static let settingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "video.slash")
@@ -35,8 +49,7 @@ struct PermissionDeniedView: View {
             Text("시스템 설정 → 개인정보 보호 및 보안 → 카메라에서 WideCam을 허용해주세요.")
                 .multilineTextAlignment(.center)
             Button("시스템 설정 열기") {
-                NSWorkspace.shared.open(
-                    URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
+                NSWorkspace.shared.open(Self.settingsURL)
             }
             .buttonStyle(.glassProminent)
         }

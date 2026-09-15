@@ -56,6 +56,7 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 	<key>CFBundleShortVersionString</key><string>${VERSION}</string>
 	<key>CFBundleVersion</key><string>1</string>
 	<key>LSMinimumSystemVersion</key><string>26.0</string>
+	<key>LSUIElement</key><true/>
 	<key>NSCameraUsageDescription</key><string>아이폰 카메라의 전체 화각 미리보기와 촬영에 사용합니다.</string>
 	<key>NSMicrophoneUsageDescription</key><string>영상 녹화에 소리를 담기 위해 사용합니다.</string>
 	<key>NSCameraUseContinuityCameraDeviceType</key><true/>
