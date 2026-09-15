@@ -11,11 +11,19 @@ final class CameraManager: NSObject, ObservableObject {
         case permissionDenied
     }
 
+    /// 센터 스테이지 해제 결과. "아직 시도하지 않음"과 "시도했지만 실패"를 구분해야
+    /// 화면이 의도가 아니라 실측을 말할 수 있다(설계 §9: 조용한 실패 금지).
+    enum CenterStageState: Equatable {
+        case unknown
+        case forcedOff
+        case failed
+    }
+
     @Published private(set) var phase: Phase = .connect
     @Published private(set) var availableDevices: [AVCaptureDevice] = []
     @Published private(set) var formatSpecs: [FormatSpec] = []
     @Published private(set) var activeSpec: FormatSpec?
-    @Published private(set) var isCenterStageForcedOff = false
+    @Published private(set) var centerStageState: CenterStageState = .unknown
     @Published var isMirrored = false
     @Published private(set) var errorBanner: String?
     @Published private(set) var lastSavedURL: URL?
@@ -77,6 +85,8 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 세션 시작과 화각 강제 (설계 §4)
 
     func select(device: AVCaptureDevice) {
+        // 이전 기기에서 남은 배너가 새 세션의 상태로 오해되지 않게 먼저 비운다.
+        errorBanner = nil
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             start(device: device)
@@ -92,12 +102,19 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// 포맷 하나를 FormatSpec으로 환산한다. 목록을 만들 때와 activeFormat을 실측할 때
+    /// 같은 규칙을 써야 실측값이 피커 항목과 어긋나지 않으므로 한 곳에 모았다.
+    private static func spec(of format: AVCaptureDevice.Format) -> FormatSpec {
+        let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        let maxRate = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 30
+        return FormatSpec(width: Int(dims.width), height: Int(dims.height), maxFrameRate: maxRate)
+    }
+
     private func start(device: AVCaptureDevice) {
         selectedDevice = device
         formatSpecs = FormatPolicy.specs(fromDimensions: device.formats.map { format in
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let maxRate = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 30
-            return (Int(dims.width), Int(dims.height), maxRate)
+            let spec = Self.spec(of: format)
+            return (spec.width, spec.height, spec.maxFrameRate)
         })
         let initial = FormatPolicy.defaultSpec(in: formatSpecs)
         phase = .capturing
@@ -149,10 +166,16 @@ final class CameraManager: NSObject, ObservableObject {
             self.session.commitConfiguration()
             self.session.startRunning()
 
+            // KVO를 가장 먼저 건다. 센터 스테이지 해제가 그 자체로 activeFormat을
+            // 건드릴 수 있어서, 관찰자가 그보다 늦게 붙으면 그 변경을 놓친다.
+            // 이 시점에는 targetSpec이 아직 nil이라 핸들러가 즉시 반환하므로
+            // 초기 포맷 적용 전에 걸어두어도 안전하다.
+            self.observeFormatReversion(of: device)
+            self.forceCenterStageOff()
+
             // 스파이크 실측: startRunning()이 activeFormat을 1080p로 되돌린다.
             // 반드시 시작 "후"에 포맷을 강제해야 1920x1440이 유지된다.
             if let initial { self.apply(spec: initial, to: device) }
-            self.forceCenterStageOff()
 
             // 코덱 설정은 연결이 만들어진 뒤(= startRunning 이후)에만 가능하다.
             // 계획서의 availableVideoCodecTypes 사전 확인은 이 SDK에서 쓸 수 없다
@@ -164,8 +187,6 @@ final class CameraManager: NSObject, ObservableObject {
                 self.movieOutput.setOutputSettings(
                     [AVVideoCodecKey: AVVideoCodecType.hevc], for: connection)
             }
-
-            self.observeFormatReversion(of: device)
         }
     }
 
@@ -203,7 +224,10 @@ final class CameraManager: NSObject, ObservableObject {
             device.activeFormat = format
             device.unlockForConfiguration()
             targetSpec = spec
-            DispatchQueue.main.async { self.activeSpec = spec }
+            // 요청값이 아니라 실측값을 올린다. 기기가 요청을 그대로 받아들이지 않아도
+            // 화면은 항상 실제 활성 포맷을 말해야 한다(설계 §9).
+            let observed = Self.spec(of: device.activeFormat)
+            DispatchQueue.main.async { self.activeSpec = observed }
         } catch {
             DispatchQueue.main.async {
                 self.errorBanner = "포맷 설정 실패: \(error.localizedDescription)"
@@ -214,8 +238,10 @@ final class CameraManager: NSObject, ObservableObject {
     private func forceCenterStageOff() {
         AVCaptureDevice.centerStageControlMode = .app
         AVCaptureDevice.isCenterStageEnabled = false
-        let forcedOff = !AVCaptureDevice.isCenterStageEnabled
-        DispatchQueue.main.async { self.isCenterStageForcedOff = forcedOff }
+        // 대입 결과를 되읽어 확인한다. 제어권을 못 가져오면 대입이 조용히 무시될 수
+        // 있고, 그때 "해제됨"이라고 표시하면 좁은 화각의 원인을 숨기게 된다.
+        let state: CenterStageState = AVCaptureDevice.isCenterStageEnabled ? .failed : .forcedOff
+        DispatchQueue.main.async { self.centerStageState = state }
     }
 
     /// 외부 요인(OS·제어 센터)이 포맷을 되돌리면 즉시 재강제한다. 조용한 실패 금지(설계 §9).
@@ -224,8 +250,11 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self else { return }
             self.sessionQueue.async {
                 guard !self.isApplyingFormat, let target = self.targetSpec else { return }
-                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                if Int(dims.width) != target.width || Int(dims.height) != target.height {
+                let observed = Self.spec(of: device.activeFormat)
+                // 되돌려졌든 아니든 표시 값은 실측으로 갱신한다. 재강제가 뒤따르면
+                // 그쪽 실측값이 메인 큐에서 이 값 다음에 올라가므로 최종 값은 교정값이다.
+                DispatchQueue.main.async { self.activeSpec = observed }
+                if observed.width != target.width || observed.height != target.height {
                     self.apply(spec: target, to: device)
                 }
             }
@@ -263,10 +292,45 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - 영상 녹화
 
+    private static let micDeniedMessage =
+        "마이크 권한이 없어 소리 없이 녹화됩니다 — 시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 허용해주세요."
+
+    /// 마이크 권한을 먼저 가른다. 권한이 없는데 그냥 붙이면 입력은 추가되지만 무음으로
+    /// 기록되고, 사용자는 "마이크를 찾지 못했다"는 엉뚱한 설명만 보게 된다(설계 §9).
+    /// sessionQueue에서, 세션 구성(beginConfiguration) 중에만 호출한다.
+    private func attachAudioInput(pairedWith camera: AVCaptureDevice) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            addAudioInput(pairedWith: camera)
+        case .notDetermined:
+            // 권한 대화상자는 비동기다. 지금 열려 있는 구성 트랜잭션 안에서 기다릴 수
+            // 없으므로, 허용되면 별도 트랜잭션으로 마이크만 뒤늦게 붙인다.
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard let self else { return }
+                guard granted else {
+                    DispatchQueue.main.async { self.errorBanner = Self.micDeniedMessage }
+                    return
+                }
+                self.sessionQueue.async {
+                    // 그 사이 뒤로가기나 연결 끊김으로 이 카메라가 세션에서 빠졌으면
+                    // 붙이지 않는다. 세션 상태는 소유 큐인 sessionQueue에서 읽는다.
+                    guard self.session.inputs.contains(where: {
+                        ($0 as? AVCaptureDeviceInput)?.device.uniqueID == camera.uniqueID
+                    }) else { return }
+                    self.session.beginConfiguration()
+                    self.addAudioInput(pairedWith: camera)
+                    self.session.commitConfiguration()
+                }
+            }
+        default:
+            DispatchQueue.main.async { self.errorBanner = Self.micDeniedMessage }
+        }
+    }
+
     /// 아이폰(연속성 카메라)의 마이크를 찾아 연결한다. uniqueID 앞자리가 카메라와 같으면
     /// 같은 기기의 마이크다. 없으면 시스템 기본 마이크로 대체한다.
     /// sessionQueue에서, 세션 구성(beginConfiguration) 중에만 호출한다.
-    private func attachAudioInput(pairedWith camera: AVCaptureDevice) {
+    private func addAudioInput(pairedWith camera: AVCaptureDevice) {
         let mics = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
         let prefix = String(camera.uniqueID.prefix(8))
@@ -328,6 +392,16 @@ final class CameraManager: NSObject, ObservableObject {
         stopRecording()
         selectedDevice = nil
         activeSpec = nil
+        // 다음 기기의 상태로 오해될 값을 모두 비운다. 이전 기기의 포맷 목록이 남으면
+        // 연결 화면을 거쳐 다시 들어온 피커가 없는 포맷을 내보인다.
+        formatSpecs = []
+        centerStageState = .unknown
+        // 녹화 표시도 여기서 끝낸다. 정지 델리게이트가 뒤늦게 도착해 같은 값을 다시
+        // 써도 무해하고, 콜백이 오지 않는 경우에도 타이머가 남아 돌지 않는다.
+        isRecording = false
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingStartDate = nil
         phase = .connect
         sessionQueue.async { [weak self, session] in
             // 소유 큐에서 해제한다. 등록도 sessionQueue이므로 순서가 뒤집히지 않는다.

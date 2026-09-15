@@ -26,6 +26,16 @@ struct MediaStore {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd_HHmmss"
-        return baseDirectory.appendingPathComponent("WideCam_\(formatter.string(from: date)).\(fileExtension)")
+        let stem = "WideCam_\(formatter.string(from: date))"
+        let candidate = baseDirectory.appendingPathComponent("\(stem).\(fileExtension)")
+        guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
+        // 파일명 해상도는 1초다. 같은 초에 두 번 찍으면 뒤의 것이 앞의 것을 덮어써
+        // 조용한 데이터 손실이 된다(설계 §9). 빈 이름을 찾을 때까지 _2, _3 … 을 붙인다.
+        var suffix = 2
+        while true {
+            let numbered = baseDirectory.appendingPathComponent("\(stem)_\(suffix).\(fileExtension)")
+            if !FileManager.default.fileExists(atPath: numbered.path) { return numbered }
+            suffix += 1
+        }
     }
 }
