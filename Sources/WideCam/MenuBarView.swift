@@ -76,8 +76,12 @@ struct MenuBarView: View {
                 // 창을 직접 본다. 예전에는 "제목줄 있는 NSPanel 아닌 보이는 창"으로
                 // 추정했는데, 상태 복원으로 되살아난 창이나 앱의 다른 제목줄 창까지
                 // 걸려 판정이 영구히 참으로 굳을 수 있었다.
+                // 녹화 시작 진행 중(마이크 권한 대화상자가 이 팝오버를 닫은 경우)도
+                // 녹화 중과 똑같이 취급한다. 여기서 세션을 내리면 사용자가 "허용"을
+                // 눌러도 녹화할 세션이 남아 있지 않다.
                 guard camera.phase == .capturing,
                       !camera.isRecording,
+                      !camera.isRecordingStartPending,
                       mainWindowHolder.window?.isVisible != true else { return }
                 camera.returnToConnect()
             }

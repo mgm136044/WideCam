@@ -92,8 +92,11 @@ struct MainWindowView: View {
             // 그쪽이 세션을 쓰는 중이므로 유지한다. 창이 사라지는 시점과 팝오버가 열리는
             // 시점의 순서는 보장되지 않아 MenuBarView와 같이 한 턴 뒤에 판정한다.
             DispatchQueue.main.async {
+                // 녹화 시작 진행 중(권한 대화상자 대기)도 녹화 중과 같게 본다 —
+                // 팝오버 쪽 판정과 같은 이유다.
                 guard camera.phase == .capturing,
                       !camera.isRecording,
+                      !camera.isRecordingStartPending,
                       !popoverPresence.isOpen else { return }
                 camera.returnToConnect()
             }
