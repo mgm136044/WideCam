@@ -73,11 +73,33 @@ struct CaptureView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            statusBadge
-                .padding(16)
-                .opacity(visibility.controlsHidden ? 0 : 1)
-                .allowsHitTesting(!visibility.controlsHidden)
-                .animation(.easeInOut(duration: 0.3), value: visibility.controlsHidden)
+            VStack(alignment: .leading, spacing: 8) {
+                // 해제 실패 표시는 자동 숨김에서 제외한다. 화각이 좁아진 원인을 설명하는
+                // 유일한 표시이고, 숨기면 설계 §9(조용한 실패 금지)가 무력해진다.
+                // 배지를 통째로 예외로 두는 대신 실패 줄만 뗀 이유: 통째로 두면 해제에
+                // 실패한 사용자는 자동 숨김을 영구히 쓸 수 없다(실패는 지속 상태다).
+                if camera.centerStageState == .failed {
+                    centerStageFailureBadge
+                }
+                if hasHideableStatus {
+                    statusBadge
+                        .opacity(visibility.controlsHidden ? 0 : 1)
+                        .allowsHitTesting(!visibility.controlsHidden)
+                        .animation(.easeInOut(duration: 0.3), value: visibility.controlsHidden)
+                }
+            }
+            .padding(16)
+        }
+        .onAppear {
+            // 전체화면에서 연결 화면을 거쳐 돌아오면 이 뷰는 새로 만들어지고 진입
+            // 알림은 이미 지나가 있다(상태 복원으로 전체화면인 채 시작하는 경우도
+            // 같다). 창이 실제로 전체화면인지 한 번 읽어 상태를 맞춘다. WindowAccessor가
+            // 창을 채우는 것은 다음 메인 큐 턴이므로 한 턴 미뤄서 읽는다.
+            DispatchQueue.main.async {
+                if windowHolder.window?.styleMask.contains(.fullScreen) == true {
+                    visibility.enterFullscreen()
+                }
+            }
         }
     }
 
@@ -88,19 +110,23 @@ struct CaptureView: View {
         return (notification.object as? NSWindow) === mine
     }
 
+    /// 해제에 실패한 사실을 숨기면 사용자는 좁아진 화각의 원인을 알 수 없다(설계 §9).
+    /// 그래서 이 배지만 자동 숨김 대상에서 빠진다.
+    private var centerStageFailureBadge: some View {
+        Label("센터 스테이지 해제 실패 — 화각이 좁을 수 있습니다",
+              systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.red)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .glassEffect(in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// 숨겨도 되는 상태 표시 — 해제 성공 확인과 활성 포맷. 둘 다 "지금 잘 되고 있다"는
+    /// 정보라서 전체화면에서 잠시 사라져도 사용자가 잃는 것이 없다.
     private var statusBadge: some View {
         VStack(alignment: .leading, spacing: 6) {
-            switch camera.centerStageState {
-            case .forcedOff:
+            if camera.centerStageState == .forcedOff {
                 Label("센터 스테이지 해제됨", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
-            case .failed:
-                // 해제에 실패한 사실을 숨기면 사용자는 좁아진 화각의 원인을 알 수 없다.
-                Label("센터 스테이지 해제 실패 — 화각이 좁을 수 있습니다",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-            case .unknown:
-                EmptyView()
             }
             if let spec = camera.activeSpec {
                 Text(spec.label).font(.caption).foregroundStyle(.secondary)
@@ -108,6 +134,12 @@ struct CaptureView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .glassEffect(in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// 내용이 하나도 없을 때 빈 유리 카드만 떠 있지 않게 확인한다(해제 실패 상태에서는
+    /// 실패 배지만 남고 이 배지는 비므로 특히 눈에 띈다).
+    private var hasHideableStatus: Bool {
+        camera.centerStageState == .forcedOff || camera.activeSpec != nil
     }
 
     private var toolbar: some View {
@@ -262,13 +294,18 @@ private final class ControlsVisibility: ObservableObject {
         timer?.invalidate()
         timer = nil
         guard isFullscreen else { return }
-        // 기본 런루프 모드의 타이머는 메뉴 트래킹 중에 억제된다. 녹화 경과 시간과
-        // 같은 이유로 공통 모드에 등록한다. 한 번만 발화하며 self를 약하게 잡으므로
-        // 뷰가 사라진 뒤 남은 발화는 아무 일도 하지 않는다.
+        // 기본 런루프 모드에 일부러 등록한다. 메뉴가 열려 있는 동안(해상도 Picker 등)
+        // 기본 모드 타이머는 억제되는데, 메뉴를 열어둔 것도 "사용 중"이므로 그 억제가
+        // 여기서는 바람직하다 — 공통 모드로 걸면 메뉴를 펼쳐 놓은 사이에 그 아래
+        // 툴바가 사라진다. 녹화 경과 시간 타이머가 공통 모드를 쓰는 이유(억제되면
+        // 시간을 잃는다)와 정반대의 판단이다.
+        //
+        // 한 번만 발화하며 self를 약하게 잡으므로 뷰가 사라진 뒤 남은 발화는 아무
+        // 일도 하지 않는다.
         let timer = Timer(timeInterval: idleDelay, repeats: false) { [weak self] _ in
             self?.hide()
         }
-        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .default)
         self.timer = timer
     }
 

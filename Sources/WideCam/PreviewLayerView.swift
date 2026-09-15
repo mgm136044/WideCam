@@ -18,14 +18,17 @@ struct PreviewLayerView: NSViewRepresentable {
         let view = PreviewNSView()
         context.coordinator.view = view
         // 메인에서 layer.session에 대입하지 않는다. 그 대입이 startRunning()의 연결
-        // 순회와 겹치면 프로세스가 죽는다(3회차 스모크 실측).
-        camera.attachPreview(view.previewLayer)
+        // 순회와 겹치면 프로세스가 죽는다(3회차 스모크 실측). 첫 프레임부터 좌우반전이
+        // 맞도록 현재 값을 같이 넘긴다 — 부착이 비동기라서 아래 updateNSView가
+        // 첫 렌더에서는 연결을 못 볼 수 있다.
+        camera.attachPreview(view.previewLayer, mirrored: isMirrored)
         return view
     }
 
     func updateNSView(_ nsView: PreviewNSView, context: Context) {
-        // 부착이 sessionQueue를 거치므로 첫 update 시점에는 connection이 아직 없을 수
-        // 있다. 그때는 아무것도 하지 않고, 연결이 생긴 뒤의 다음 update에서 적용된다.
+        // 최초 적용은 attachPreview가 맡는다(부착이 비동기라 여기서는 첫 렌더에 연결이
+        // 없을 수 있다). 이 경로는 그 뒤의 토글 변경을 반영한다 — isMirrored가 바뀌면
+        // 렌더가 보장되고 그때는 연결이 이미 존재한다.
         if let connection = nsView.previewLayer.connection {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = isMirrored
