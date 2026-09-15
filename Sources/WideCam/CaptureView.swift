@@ -7,7 +7,18 @@ struct CaptureView: View {
     @StateObject private var windowHolder = WindowHolder()
     /// 전체화면에서만 동작하는 UI 자동 숨김 상태. @State가 이 머신에서 컴파일되지
     /// 않으므로 FlashOverlay와 같은 방식(@StateObject + ObservableObject)으로 담는다.
-    @StateObject private var visibility = ControlsVisibility()
+    @StateObject private var visibility: ControlsVisibility
+
+    init(camera: CameraManager) {
+        _camera = ObservedObject(wrappedValue: camera)
+        // 녹화 여부를 플래그로 복사하지 않고 판단 시점(타이머 발화)에 직접 읽는다.
+        // 복사해 두면 동기화를 놓치는 경로가 생긴다 — 팝오버에서 녹화를 시작한 뒤
+        // 큰 창을 열면 이 뷰는 "이미 녹화 중"인 상태로 나타나고, 그때는 값이 바뀌지
+        // 않으므로 onChange가 불리지 않는다. CameraManager.isPresentationReady와 같은
+        // 주입 방식이다.
+        _visibility = StateObject(
+            wrappedValue: ControlsVisibility(isRecording: { camera.isRecording }))
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -39,6 +50,12 @@ struct CaptureView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didExitFullScreenNotification)) { note in
             if isMyWindow(note) { visibility.exitFullscreen() }
+        }
+        // 녹화가 시작되면 이미 숨어 있던 컨트롤을 다시 보인다(숨은 채로 시작하면
+        // 녹화 중이라는 사실이 화면에서 사라진다). 녹화가 끝나면 같은 poke가
+        // 타이머를 다시 걸어 자동 숨김을 되살린다.
+        .onChange(of: camera.isRecording) { _, _ in
+            visibility.poke()
         }
         // 창 참조를 얻고 .fullScreenPrimary를 켜기 위한 크기 0의 숨은 브리지.
         // 레이아웃과 히트 테스트에 영향을 주지 않는다.
@@ -189,6 +206,13 @@ struct CaptureView: View {
             .padding(.horizontal, 20).padding(.vertical, 12)
             .glassEffect(in: Capsule())
         }
+        // 툴바를 누르는 것도 "사용 중"이다. 포인터를 고정한 채 셔터만 연타하면
+        // 마우스 이동 이벤트가 없어 2.5초 뒤 툴바가 숨어버리고, 그때부터
+        // allowsHitTesting(false) 때문에 클릭이 먹지 않는다.
+        //
+        // simultaneousGesture는 버튼 자신의 제스처와 나란히 인식되므로 버튼 동작을
+        // 가로채거나 늦추지 않는다(버튼마다 poke()를 심는 대신 한 곳에서 처리한다).
+        .simultaneousGesture(TapGesture().onEnded { visibility.poke() })
     }
 }
 
@@ -204,8 +228,14 @@ private final class ControlsVisibility: ObservableObject {
 
     /// 마지막 마우스 움직임 뒤 이만큼 지나면 감춘다.
     private let idleDelay: TimeInterval = 2.5
+    /// 지금 녹화 중인지 묻는 훅. 값을 복사해 두지 않고 숨기기 직전에 읽는다.
+    private let isRecording: () -> Bool
     private var isFullscreen = false
     private var timer: Timer?
+
+    init(isRecording: @escaping () -> Bool) {
+        self.isRecording = isRecording
+    }
 
     /// 마우스가 움직였다. 컨트롤을 보이고 유예 시간을 처음부터 다시 센다.
     func poke() {
@@ -245,6 +275,10 @@ private final class ControlsVisibility: ObservableObject {
     private func hide() {
         // 타이머가 걸린 뒤 전체화면에서 나갔다면 숨기지 않는다.
         guard isFullscreen else { return }
+        // 전체화면 녹화 중에 빨간 표시와 경과 시간까지 숨으면 녹화하고 있다는 사실
+        // 자체가 화면에서 사라진다. 상태를 숨기지 않는다는 설계 §9의 취지에 어긋나므로
+        // 녹화 중에는 감추지 않는다.
+        guard !isRecording() else { return }
         controlsHidden = true
         // 동영상 플레이어 관례: 컨트롤이 사라지면 포인터도 사라진다. 다음 마우스
         // 움직임에서 AppKit이 되살리고, 같은 움직임이 onContinuousHover로 들어와
