@@ -33,11 +33,16 @@ else
 fi
 
 echo "[2/4] 번들 생성"
+BIN="$SCRIPT_DIR/.build/release/WideCam"
+if [ ! -x "$BIN" ]; then
+    echo "✗ $BIN 없음 — 빌드를 먼저 하거나 --skip-build를 빼세요."
+    exit 1
+fi
 pkill -x WideCam 2>/dev/null || true
 sleep 1
 rm -rf "$APP_PATH"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
-cp "$SCRIPT_DIR/.build/release/WideCam" "$APP_PATH/Contents/MacOS/WideCam"
+cp "$BIN" "$APP_PATH/Contents/MacOS/WideCam"
 cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,6 +58,7 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 	<key>LSMinimumSystemVersion</key><string>26.0</string>
 	<key>NSCameraUsageDescription</key><string>아이폰 카메라의 전체 화각 미리보기와 촬영에 사용합니다.</string>
 	<key>NSMicrophoneUsageDescription</key><string>영상 녹화에 소리를 담기 위해 사용합니다.</string>
+	<key>NSCameraUseContinuityCameraDeviceType</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
