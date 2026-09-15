@@ -31,6 +31,12 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var recordingSeconds = 0
 
+    /// 경과 시간 표시값. 큰 창과 팝오버가 같은 형식을 써야 하므로 여기 한 곳에 둔다.
+    /// recordingSeconds가 메인 큐에서만 바뀌므로 이 계산도 메인 큐에서만 읽는다.
+    var recordingClock: String {
+        String(format: "%02d:%02d", recordingSeconds / 60, recordingSeconds % 60)
+    }
+
     let session = AVCaptureSession()
     let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
 
