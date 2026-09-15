@@ -36,7 +36,19 @@ macOS의 연속성 카메라(Continuity Camera)로 아이폰을 연결하면 Pho
 
 ## 3. 화면 흐름
 
-단일 윈도우, 2단계 화면 전환.
+메뉴바 상주 앱이다. **메뉴바 아이콘 → 팝오버(라이브 프리뷰) → 필요할 때만 큰 창**이
+기본 동선이고, Dock 아이콘은 없다(배포 번들 `LSUIElement`). 앱을 시작하면 창 없이
+메뉴바 아이콘만 남는다.
+
+- **팝오버**(`MenuBarView`): 아래 3.1·3.2·권한 안내를 압축한 한 화면. 열면 카메라가
+  켜지고(기기가 있으면 자동 선택) 닫으면 꺼진다 — 녹화 중이거나 큰 창이 열려 있으면
+  세션을 유지한다. 사진·녹화·큰 창 열기·종료만 담는다.
+- **큰 창**(`Window(id: "main")`): 해상도 선택, 좌우반전, 전체화면, 마지막 저장물
+  Finder에서 보기처럼 자리가 필요한 조작이 있는 곳. 팝오버의 "큰 창 열기"로 열고,
+  빨간 X로 닫으면(팝오버도 닫혀 있고 녹화 중이 아니면) 카메라를 놓는다.
+
+두 화면은 하나의 `CameraManager`와 하나의 `AVCaptureSession`을 공유한다. 아래 3.1·3.2는
+큰 창의 2단계 화면 전환을 말한다.
 
 ### 3.1 연결 화면 (시작 화면)
 - 감지된 연속성 카메라(아이폰) 목록을 글라스 카드로 표시. 기기명 클릭 시 촬영
@@ -87,14 +99,16 @@ SwiftUI + AVFoundation. Swift Package Manager 실행 파일 타깃.
 widecam_app/
 ├── Package.swift
 ├── Sources/WideCam/
-│   ├── WideCamApp.swift        # 앱 엔트리, 윈도우/화면 전환
+│   ├── WideCamApp.swift        # 앱 엔트리, 메뉴바/윈도우 scene, 큰 창 루트
+│   ├── MenuBarView.swift       # 메뉴바 팝오버 (프리뷰·사진·녹화·큰 창 열기·종료)
 │   ├── CameraManager.swift     # 세션·포맷강제·센터스테이지·캡처 (ObservableObject)
 │   ├── ConnectView.swift       # 연결 화면
 │   ├── CaptureView.swift       # 촬영 화면 + 글라스 툴바
 │   ├── PreviewLayerView.swift  # AVCaptureVideoPreviewLayer NSViewRepresentable
+│   ├── WindowAccessor.swift    # SwiftUI 뷰 ↔ 자기 NSWindow 브리지 (전체화면·창 추적)
 │   └── MediaStore.swift        # 저장 경로·파일명 생성 (순수 로직, 단위 테스트 대상)
 ├── Tests/WideCamTests/         # 포맷 선택·파일명 로직 단위 테스트
-├── Resources/Info.plist        # NSCameraUsageDescription 등
+├── Resources/AppIcon.icns      # 앱 아이콘 (Info.plist는 deploy.sh가 생성)
 ├── deploy.sh                   # 빌드→번들 생성→서명→실행
 └── docs/superpowers/specs/     # 본 문서
 ```
@@ -138,7 +152,7 @@ RainDrop의 deploy.sh는 기존 번들에 바이너리만 교체하는 방식이
 
 - 단위 테스트: 포맷 기본값 선택 로직, 파일명/경로 생성 (swift test).
 - 수동 체크리스트 (실기기):
-  1. 앱 시작 → 연결 화면에 아이폰 표시
+  1. 앱 시작 → 메뉴바 아이콘만 표시(큰 창·Dock 없음) → 아이콘 클릭 → 팝오버에 아이폰 표시
   2. 선택 → 프리뷰가 4:3 1920×1440으로 표시 (Photo Booth 대비 넓은 화각 확인)
   3. 제어 센터에서 센터 스테이지를 켜도 앱 화면은 넓은 화각 유지(강제 해제 동작)
   4. 사진 촬영 → `~/Pictures/WideCam/`에 HEIC 저장, 해상도 1920×1440
