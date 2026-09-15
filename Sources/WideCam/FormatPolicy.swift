@@ -30,11 +30,14 @@ enum FormatPolicy {
     }
 
     /// 기본값: 화각이 가장 넓은 4:3 최대 해상도, fps는 30 이상 중 최소(발열·용량 균형).
+    /// 30 이상이 없으면 가능한 최대 fps. 입력 배열의 순서와 무관하게 같은 결과를 낸다.
     static func defaultSpec(in specs: [FormatSpec]) -> FormatSpec? {
         let fourThree = specs.filter(\.isFourThree)
         let pool = fourThree.isEmpty ? specs : fourThree
         guard let maxPixels = pool.map(\.pixelCount).max() else { return nil }
-        let candidates = pool.filter { $0.pixelCount == maxPixels }
+        let candidates = pool
+            .filter { $0.pixelCount == maxPixels }
+            .sorted { $0.maxFrameRate < $1.maxFrameRate }
         return candidates.first { $0.maxFrameRate >= 30 } ?? candidates.last
     }
 }
