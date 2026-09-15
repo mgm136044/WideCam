@@ -6,7 +6,10 @@ struct WideCamApp: App {
     @StateObject private var camera = CameraManager()
 
     var body: some Scene {
-        WindowGroup("WideCam") {
+        // WindowGroup은 Cmd+N으로 창이 여러 개 열리고, 그러면 하나의 AVCaptureSession을
+        // 여러 프리뷰가 물게 되어 설계 §3(단일 윈도우)이 깨진다. Window는 창을 하나로
+        // 묶고 새 창 메뉴 항목 자체를 없앤다(macOS 13+).
+        Window("WideCam", id: "main") {
             Group {
                 switch camera.phase {
                 case .connect:

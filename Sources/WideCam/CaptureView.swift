@@ -33,9 +33,17 @@ struct CaptureView: View {
 
     private var statusBadge: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if camera.isCenterStageForcedOff {
+            switch camera.centerStageState {
+            case .forcedOff:
                 Label("센터 스테이지 해제됨", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
+            case .failed:
+                // 해제에 실패한 사실을 숨기면 사용자는 좁아진 화각의 원인을 알 수 없다.
+                Label("센터 스테이지 해제 실패 — 화각이 좁을 수 있습니다",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+            case .unknown:
+                EmptyView()
             }
             if let spec = camera.activeSpec {
                 Text(spec.label).font(.caption).foregroundStyle(.secondary)
@@ -95,6 +103,9 @@ struct CaptureView: View {
                 }
                 .pickerStyle(.menu)
                 .fixedSize()
+                // 녹화 중 activeFormat을 바꾸면 기록 중인 파일의 해상도가 중간에
+                // 갈리거나 녹화가 끊긴다. 녹화 중에는 선택 자체를 막는다.
+                .disabled(camera.isRecording)
                 .help("해상도·프레임레이트")
 
                 Toggle(isOn: $camera.isMirrored) {
