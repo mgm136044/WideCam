@@ -121,22 +121,14 @@ struct CaptureView: View {
                 .help("좌우반전 (프리뷰에만 적용)")
 
                 Button {
-                    // 전체화면이 두 번 연속 실패했다(창 참조를 직접 잡는 수정으로도
-                    // 안 됐다). 무엇이 실제로 손에 잡히는지 stderr로 찍어 swift run
-                    // 로그에서 읽는다 — 이 진단 블록은 원인이 잡히면 지운다.
                     // keyWindow가 nil인 순간(패널·메뉴가 키를 가진 경우 등)에도
                     // 동작해야 하므로 자기 창 → keyWindow → 보이는 첫 창 순으로 폴백한다.
                     let resolved = windowHolder.window
                         ?? NSApp.keyWindow
                         ?? NSApp.windows.first { $0.isVisible }
-                    FileHandle.standardError.write(Data("""
-                        [WideCam fullscreen] holder=\(String(describing: windowHolder.window)) key=\(String(describing: NSApp.keyWindow)) resolved=\(String(describing: resolved)) styleMask=\(resolved?.styleMask.rawValue ?? 0) collection=\(resolved?.collectionBehavior.rawValue ?? 0) windows=\(NSApp.windows.map { "\($0.className):\($0.isVisible)" })
-
-                        """.utf8))
                     if let window = resolved {
                         // .fullScreenNone이 켜져 있으면 .fullScreenPrimary를 넣어도
-                        // 전체화면이 거부된다. 넣기만 하던 이전 판이 실패했으므로
-                        // 상충 플래그를 먼저 뺀다.
+                        // 전체화면이 거부된다. 상충 플래그를 먼저 뺀다.
                         window.collectionBehavior.remove(.fullScreenNone)
                         window.collectionBehavior.insert(.fullScreenPrimary)
                         window.toggleFullScreen(nil)
