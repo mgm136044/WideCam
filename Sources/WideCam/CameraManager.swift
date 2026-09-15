@@ -39,8 +39,9 @@ final class CameraManager: NSObject, ObservableObject {
     private let mediaStore = MediaStore()
     // sessionQueue에서 쓰고, 그 뒤에 도착하는 델리게이트 콜백에서만 읽는다.
     private var usesHEVCPhotos = false
-    // 메인 큐에서만 만들고 무효화한다(녹화 델리게이트 콜백이 메인 큐로 넘긴다).
+    // 아래 두 변수는 메인 큐에서만 만들고 비운다(녹화 델리게이트 콜백이 메인 큐로 넘긴다).
     private var recordingTimer: Timer?
+    private var recordingStartDate: Date?
 
     override init() {
         super.init()
@@ -320,8 +321,10 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 종료
 
     func returnToConnect() {
-        // 세션을 허무는 블록보다 먼저 sessionQueue에 넣어야(FIFO) 출력이 제거되기 전에
-        // 녹화가 정상 종료되고 파일이 마무리된다.
+        // 먼저 호출하면 정지 명령이 아래 teardown 블록보다 앞서 sessionQueue에 들어간다
+        // (FIFO). FIFO가 보장하는 것은 그 순서뿐이다 — 남은 데이터는 정지 이후
+        // 백그라운드에서 기록되므로(AVCaptureFileOutput 헤더) 파일이 끝까지 온전히
+        // 마무리되는지는 이 순서만으로 단정할 수 없고, 실기기 스모크에서 실측한다.
         stopRecording()
         selectedDevice = nil
         activeSpec = nil
@@ -376,9 +379,17 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
         DispatchQueue.main.async { [self] in
             self.isRecording = true
             self.recordingSeconds = 0
-            self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                self?.recordingSeconds += 1
+            self.recordingStartDate = Date()
+            // 발화 횟수를 세면 안 된다. 메뉴 트래킹이나 창 크기 조절 중에는 기본
+            // 런루프 모드의 타이머가 억제되고, 억제된 만큼의 시간을 영구히 잃는다.
+            // 공통 모드(.common)로 등록해 그런 구간에서도 돌게 하고, 표시 값은
+            // 시작 시각과의 차이로 계산해 어긋남이 누적되지 않게 한다.
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                guard let self, let start = self.recordingStartDate else { return }
+                self.recordingSeconds = Int(Date().timeIntervalSince(start))
             }
+            RunLoop.main.add(timer, forMode: .common)
+            self.recordingTimer = timer
         }
     }
 
@@ -390,11 +401,21 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
             self.isRecording = false
             self.recordingTimer?.invalidate()
             self.recordingTimer = nil
-            // 기기 이탈로 녹화가 끊겨도 그 시점까지의 파일은 저장된다 (설계 §9).
-            if let error {
-                self.errorBanner = "녹화가 중단되었습니다: \(error.localizedDescription)"
+            self.recordingStartDate = nil
+            // error가 있다는 것만으로 실패라고 볼 수 없다. AVFoundation은 기기 이탈처럼
+            // "중단됐지만 파일은 재생 가능한" 경우에도 error를 채워 보내고, 진짜 성공
+            // 여부는 AVErrorRecordingSuccessfullyFinishedKey가 알려준다. 그래서 파일이
+            // 온전할 때는 배너 없이 저장물로만 넘기고(설계 §9: 그 시점까지는 저장된다.
+            // 기기 이탈 사유는 devicesChanged의 연결 끊김 배너가 이미 설명한다),
+            // 실패했을 때는 Finder 버튼이 죽은 파일을 가리키지 않도록 저장물로 올리지 않는다.
+            let finishedCleanly = ((error as NSError?)?
+                .userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? (error == nil)
+            if finishedCleanly {
+                self.lastSavedURL = outputFileURL
+            } else {
+                self.errorBanner =
+                    "녹화가 중단되었습니다: \(error?.localizedDescription ?? "알 수 없는 오류")"
             }
-            self.lastSavedURL = outputFileURL
         }
     }
 }
