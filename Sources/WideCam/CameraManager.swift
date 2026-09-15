@@ -118,8 +118,15 @@ final class CameraManager: NSObject, ObservableObject {
             }
             self.session.addInput(input)
 
+            // 출력 추가 실패도 조용히 넘기지 않는다(설계 §9). 단 입력과 달리 세션을
+            // 되돌리지는 않는다 — 사진 기능 없이도 프리뷰는 그대로 쓸 수 있고,
+            // 셔터 크래시는 capturePhoto()의 연결 가드가 막아준다.
             if self.session.canAddOutput(self.photoOutput) {
                 self.session.addOutput(self.photoOutput)
+            } else {
+                DispatchQueue.main.async {
+                    self.errorBanner = "사진 출력을 세션에 추가하지 못했습니다."
+                }
             }
             self.session.commitConfiguration()
             self.session.startRunning()
@@ -200,6 +207,14 @@ final class CameraManager: NSObject, ObservableObject {
     func capturePhoto() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // 출력이 세션에서 떨어진 뒤(뒤로가기 직후 등) 도착한 탭은 활성 연결이 없어
+            // capturePhoto()가 NSException을 던진다 — Swift에서 잡을 수 없으므로 미리 막는다.
+            guard self.photoOutput.connection(with: .video) != nil else {
+                DispatchQueue.main.async {
+                    self.errorBanner = "카메라가 연결되어 있지 않아 촬영할 수 없습니다."
+                }
+                return
+            }
             let settings: AVCapturePhotoSettings
             if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
                 settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
