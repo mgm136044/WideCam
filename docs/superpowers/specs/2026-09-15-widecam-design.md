@@ -105,6 +105,7 @@ widecam_app/
 │   ├── ConnectView.swift       # 연결 화면
 │   ├── CaptureView.swift       # 촬영 화면 + 글라스 툴바
 │   ├── PreviewLayerView.swift  # AVCaptureVideoPreviewLayer NSViewRepresentable
+│   ├── ConnectivityHint.swift  # 기기 미발견 원인 실측 (CoreWLAN Wi-Fi 전원)
 │   ├── WindowAccessor.swift    # SwiftUI 뷰 ↔ 자기 NSWindow 브리지 (전체화면·창 추적)
 │   └── MediaStore.swift        # 저장 경로·파일명 생성 (순수 로직, 단위 테스트 대상)
 ├── Tests/WideCamTests/         # 포맷 선택·파일명 로직 단위 테스트

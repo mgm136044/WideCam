@@ -16,6 +16,12 @@ struct ConnectView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("아이폰이 보이지 않아요. 다음을 확인하세요.")
                         .font(.headline)
+                    // 맥 쪽 Wi-Fi가 꺼져 있다는 것은 실측이다. 아래 세 줄의 "확인하세요"
+                    // 중에서 이미 확정된 원인 하나를 먼저 짚어준다(팝오버와 같은 문장).
+                    if ConnectivityHint.isWiFiOff {
+                        Label("Wi-Fi가 꺼져 있습니다 — 켜주세요", systemImage: "wifi.slash")
+                            .foregroundStyle(.orange)
+                    }
                     Label("맥과 아이폰이 같은 Apple 계정으로 로그인되어 있어야 합니다",
                           systemImage: "person.circle")
                     Label("양쪽 모두 Wi-Fi와 블루투스가 켜져 있어야 합니다", systemImage: "wifi")
