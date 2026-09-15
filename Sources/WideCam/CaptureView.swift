@@ -103,10 +103,12 @@ struct CaptureView: View {
         }
     }
 
-    /// 알림이 내 창의 것인지. 창 참조를 아직 못 잡은 경우(이론상)에는 받아들인다 —
-    /// 이 앱에서 전체화면이 될 수 있는 창은 큰 창 하나뿐이다.
+    /// 알림이 내 창의 것인지. 창 참조를 못 잡았으면 **거부한다**. 예전에는 받아들였는데,
+    /// 그러면 다른 창(또는 프로세스 안의 아무 코드)이 낸 전체화면 알림에 상태 기계가
+    /// 전체화면으로 들어가 창 모드에서 툴바와 커서가 사라질 수 있었다. 참조를 놓쳐
+    /// 첫 진입 알림을 놓치는 경우는 위 onAppear의 styleMask 실측이 이미 보완한다.
     private func isMyWindow(_ notification: Notification) -> Bool {
-        guard let mine = windowHolder.window else { return true }
+        guard let mine = windowHolder.window else { return false }
         return (notification.object as? NSWindow) === mine
     }
 

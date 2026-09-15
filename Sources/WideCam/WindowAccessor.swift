@@ -21,6 +21,11 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        // 이미 같은 창을 잡아 뒀으면 아무 일도 하지 않는다. 녹화 중에는 초당 1회 body가
+        // 재평가되고 그때마다 main.async + collectionBehavior 쓰기가 WindowServer로
+        // 나갔다 — 전체화면 관련 플래그를 값이 안 바뀌었는데도 반복해서 건드리는 것은
+        // 부작용 위험이 0이 아니다.
+        if let window = nsView.window, window === holder.window { return }
         DispatchQueue.main.async { [weak holder] in
             guard let window = nsView.window else { return }
             holder?.window = window
