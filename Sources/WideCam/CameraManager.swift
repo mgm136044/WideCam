@@ -47,14 +47,21 @@ final class CameraManager: NSObject, ObservableObject {
     // 그대로 재발할 수 있다. 프리뷰 부착은 attachPreview/detachPreview로만 한다.
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.session")
+    /// 기기 열거 전용 직렬 큐. 알림이 몰려도 열거가 겹치지 않고, 메인에 올라가는 순서가
+    /// 열거 순서와 같다(세션을 만지지 않으므로 sessionQueue와 섞지 않는다).
+    private let discoveryQueue = DispatchQueue(label: "com.mingyeongmin.WideCam.discovery")
 
     private(set) var selectedDevice: AVCaptureDevice?
     // formatObservation의 소유 큐는 sessionQueue다. 등록(observeFormatReversion)과
     // 해제(returnToConnect)를 모두 sessionQueue에서 처리해 FIFO 순서를 보장한다.
     private var formatObservation: NSKeyValueObservation?
-    // 아래 두 변수도 sessionQueue에서만 접근한다.
+    // 아래 세 변수도 sessionQueue에서만 접근한다.
     private var targetSpec: FormatSpec?
     private var isApplyingFormat = false
+    /// 연속 재강제 횟수. 사용자가 포맷을 새로 고르거나 일치에 성공하면 0으로 되돌린다.
+    private var reforceAttempts = 0
+    /// 이 횟수를 넘기면 재강제를 포기하고 배너로 알린다.
+    private static let maxReforceAttempts = 3
 
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
@@ -78,22 +85,38 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - 기기 발견
 
+    /// 알림 페이로드는 읽지 않는다(위조 가능하고, 오디오 기기 착탈도 같은 알림을 낸다).
+    /// 목록을 다시 열거하고 그 결과로만 판단한다.
     @objc private func devicesChanged(_ note: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.refreshDevices()
-            if let current = self.selectedDevice, !self.availableDevices.contains(current) {
-                self.returnToConnect()
-                self.errorBanner = "아이폰 연결이 끊어졌습니다."
-            }
-        }
+        refreshDevices()
     }
 
+    /// 기기 열거를 메인 큐에서 하지 않는다. `DiscoverySession` 생성은 CoreMediaIO DAL
+    /// 플러그인 로드를 유발할 수 있어(가상 카메라 앱이 깔린 기기에서 특히) 수십 밀리초
+    /// 메인 스레드를 잡는데, 이 앱은 메뉴바 상주라 AirPods 착탈 같은 무관한 알림에도
+    /// 이 경로가 깨어난다. 열거는 전용 직렬 큐에서 하고 결과만 메인으로 올린다.
+    /// init()에서도 이 경로를 쓰므로 실행 시점의 메인 블로킹도 같이 사라진다.
     private func refreshDevices() {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.continuityCamera, .external],
-            mediaType: .video, position: .unspecified)
-        availableDevices = discovery.devices.filter { $0.isContinuityCamera }
+        discoveryQueue.async { [weak self] in
+            // .external은 죽은 값이었다 — 아래 isContinuityCamera 필터가 전부 걸러내면서
+            // 열거 범위(USB/UVC 카메라·DAL 플러그인)만 넓혀 비용을 키웠다.
+            let discovery = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.continuityCamera], mediaType: .video, position: .unspecified)
+            let found = discovery.devices.filter { $0.isContinuityCamera }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // 값이 같으면 발행하지 않는다. @Published는 같은 값에도 발행하므로
+                // 게이팅이 없으면 무관한 기기 착탈마다 화면이 재평가된다.
+                // AVCaptureDevice는 NSObject라 배열 비교가 동일성 비교로 성립한다.
+                if self.availableDevices != found { self.availableDevices = found }
+                // 연결 끊김 판정은 반드시 새 목록이 올라온 "뒤"에 한다. 열거가 동기였을
+                // 때는 같은 블록의 순서가 이를 보장했지만 이제는 여기가 그 지점이다.
+                if let current = self.selectedDevice, !found.contains(current) {
+                    self.returnToConnect()
+                    self.errorBanner = "아이폰 연결이 끊어졌습니다."
+                }
+            }
+        }
     }
 
     // MARK: - 세션 시작과 화각 강제 (설계 §4)
@@ -183,7 +206,10 @@ final class CameraManager: NSObject, ObservableObject {
                     self.errorBanner = "영상 출력을 세션에 추가하지 못했습니다."
                 }
             }
-            self.attachAudioInput(pairedWith: device)
+            // 마이크는 여기서 붙이지 않는다. 프리뷰를 켜는 것만으로 아이폰 마이크가
+            // 잡히면 메뉴바에 마이크 사용 표시가 뜨고, 녹화를 시도하지도 않은 사용자에게
+            // 마이크 권한을 묻게 된다 — 번들의 사용 설명("영상 녹화에")과도 어긋난다.
+            // 부착은 startRecording()으로, 분리는 녹화 종료 시점으로 옮겼다.
 
             self.session.commitConfiguration()
             self.session.startRunning()
@@ -253,7 +279,12 @@ final class CameraManager: NSObject, ObservableObject {
 
     func apply(spec: FormatSpec) {
         guard let device = selectedDevice else { return }
-        sessionQueue.async { [weak self] in self?.apply(spec: spec, to: device) }
+        sessionQueue.async { [weak self] in
+            // 사용자가 새 포맷을 고르면 재강제 상한을 처음부터 다시 센다(이전 포맷에서
+            // 상한에 걸렸다는 이유로 새 요청을 포기하면 안 된다).
+            self?.reforceAttempts = 0
+            self?.apply(spec: spec, to: device)
+        }
     }
 
     /// sessionQueue에서만 호출한다.
@@ -307,9 +338,24 @@ final class CameraManager: NSObject, ObservableObject {
                 // 되돌려졌든 아니든 표시 값은 실측으로 갱신한다. 재강제가 뒤따르면
                 // 그쪽 실측값이 메인 큐에서 이 값 다음에 올라가므로 최종 값은 교정값이다.
                 DispatchQueue.main.async { self.activeSpec = observed }
-                if observed.width != target.width || observed.height != target.height {
-                    self.apply(spec: target, to: device)
+                guard observed.width != target.width || observed.height != target.height else {
+                    self.reforceAttempts = 0
+                    return
                 }
+                // 재강제가 또 KVO를 깨우므로, 기기가 요청을 끝까지 거부하면 이 경로는
+                // 무한 루프가 된다. 한 회차가 곧 캡처 스트림 재시작 1회라서 프리뷰가
+                // 영구히 깜빡이고 코어 하나를 태운다(isApplyingFormat 가드는 이 경로를
+                // 막지 못한다 — KVO 콜백이 sessionQueue로 다시 넘기면서 apply의 defer가
+                // 이미 지나가 있다). 상한을 두되 조용히 포기하지는 않는다(설계 §9).
+                self.reforceAttempts += 1
+                guard self.reforceAttempts <= Self.maxReforceAttempts else {
+                    DispatchQueue.main.async {
+                        self.errorBanner =
+                            "기기가 \(target.label)을 유지하지 않아 재설정을 멈췄습니다 — 센터 스테이지가 켜져 있는지 확인해주세요."
+                    }
+                    return
+                }
+                self.apply(spec: target, to: device)
             }
         }
     }
@@ -347,37 +393,45 @@ final class CameraManager: NSObject, ObservableObject {
 
     private static let micDeniedMessage =
         "마이크 권한이 없어 소리 없이 녹화됩니다 — 시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 허용해주세요."
+    private static let noCameraMessage = "카메라가 연결되어 있지 않아 녹화할 수 없습니다."
 
-    /// 마이크 권한을 먼저 가른다. 권한이 없는데 그냥 붙이면 입력은 추가되지만 무음으로
-    /// 기록되고, 사용자는 "마이크를 찾지 못했다"는 엉뚱한 설명만 보게 된다(설계 §9).
-    /// sessionQueue에서, 세션 구성(beginConfiguration) 중에만 호출한다.
+    /// 녹화를 시작해도 되는 상태인지. sessionQueue에서만 읽는다.
+    ///
+    /// 활성·사용 가능한 비디오 연결이 없거나 세션이 멈춘 상태에서 `startRecording(to:)`을
+    /// 부르면 Swift에서 잡을 수 없는 NSException("no active and enabled connection")이
+    /// 난다 — 즉 크래시다. capturePhoto()의 가드와 같은 이유다.
+    private var canStartRecording: Bool {
+        guard let connection = movieOutput.connection(with: .video) else { return false }
+        return connection.isActive && connection.isEnabled && session.isRunning
+    }
+
+    /// 마이크를 세션에 붙인다. 실행 중인 세션을 고치므로 구성 트랜잭션으로 감싼다.
+    /// sessionQueue에서만 호출한다.
     private func attachAudioInput(pairedWith camera: AVCaptureDevice) {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            addAudioInput(pairedWith: camera)
-        case .notDetermined:
-            // 권한 대화상자는 비동기다. 지금 열려 있는 구성 트랜잭션 안에서 기다릴 수
-            // 없으므로, 허용되면 별도 트랜잭션으로 마이크만 뒤늦게 붙인다.
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                guard let self else { return }
-                guard granted else {
-                    DispatchQueue.main.async { self.errorBanner = Self.micDeniedMessage }
-                    return
-                }
-                self.sessionQueue.async {
-                    // 그 사이 뒤로가기나 연결 끊김으로 이 카메라가 세션에서 빠졌으면
-                    // 붙이지 않는다. 세션 상태는 소유 큐인 sessionQueue에서 읽는다.
-                    guard self.session.inputs.contains(where: {
-                        ($0 as? AVCaptureDeviceInput)?.device.uniqueID == camera.uniqueID
-                    }) else { return }
-                    self.session.beginConfiguration()
-                    self.addAudioInput(pairedWith: camera)
-                    self.session.commitConfiguration()
-                }
-            }
-        default:
-            DispatchQueue.main.async { self.errorBanner = Self.micDeniedMessage }
-        }
+        // 이미 붙어 있으면 다시 붙이지 않는다(연속 녹화에서 입력이 겹쳐 쌓이는 것 방지).
+        guard !session.inputs.contains(where: { Self.isAudioInput($0) }) else { return }
+        // 그 사이 뒤로가기나 연결 끊김으로 이 카메라가 세션에서 빠졌으면 붙이지 않는다.
+        // 세션 상태는 소유 큐인 sessionQueue에서 읽는다.
+        guard session.inputs.contains(where: {
+            ($0 as? AVCaptureDeviceInput)?.device.uniqueID == camera.uniqueID
+        }) else { return }
+        session.beginConfiguration()
+        addAudioInput(pairedWith: camera)
+        session.commitConfiguration()
+    }
+
+    /// 녹화가 끝나면 마이크를 뗀다. 프리뷰만 보는 동안 마이크 사용 표시가 켜져 있으면
+    /// 사용자는 카메라 앱이 왜 마이크를 쓰는지 알 수 없다. sessionQueue에서만 호출한다.
+    private func detachAudioInput() {
+        let audioInputs = session.inputs.filter { Self.isAudioInput($0) }
+        guard !audioInputs.isEmpty else { return }
+        session.beginConfiguration()
+        audioInputs.forEach(session.removeInput)
+        session.commitConfiguration()
+    }
+
+    private static func isAudioInput(_ input: AVCaptureInput) -> Bool {
+        (input as? AVCaptureDeviceInput)?.device.hasMediaType(.audio) == true
     }
 
     /// 아이폰(연속성 카메라)의 마이크를 찾아 연결한다. uniqueID 앞자리가 카메라와 같으면
@@ -398,17 +452,46 @@ final class CameraManager: NSObject, ObservableObject {
         session.addInput(input)
     }
 
+    /// 메인 큐에서 호출한다(뷰의 버튼에서만 불린다 — selectedDevice를 메인에서 읽는다).
+    ///
+    /// 마이크는 여기서 비로소 붙는다. 권한을 가르는 일은 예전에 세션 시작 경로가 하던
+    /// 것을 그대로 옮겨 왔다. 권한이 없는데 그냥 붙이면 입력은 추가되지만 무음으로
+    /// 기록되고, 사용자는 "마이크를 찾지 못했다"는 엉뚱한 설명만 보게 된다(설계 §9).
     func startRecording() {
+        guard let camera = selectedDevice else {
+            errorBanner = Self.noCameraMessage
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            beginRecording(audioFrom: camera)
+        case .notDetermined:
+            // 권한 대화상자는 비동기다. 허용되면 소리와 함께, 거절되면 소리 없이 녹화한다
+            // (녹화 자체를 막지는 않는다).
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.beginRecording(audioFrom: camera)
+                } else {
+                    DispatchQueue.main.async { self.errorBanner = Self.micDeniedMessage }
+                    self.beginRecording(audioFrom: nil)
+                }
+            }
+        default:
+            errorBanner = Self.micDeniedMessage
+            beginRecording(audioFrom: nil)
+        }
+    }
+
+    /// `audioFrom`이 nil이면 소리 없이 녹화한다. 부착과 녹화 시작을 같은 sessionQueue
+    /// 블록에 넣어 순서를 보장한다 — 부착이 늦게 실행되면 첫 구간의 소리가 빠진다.
+    private func beginRecording(audioFrom camera: AVCaptureDevice?) {
         sessionQueue.async { [weak self] in
             guard let self, !self.movieOutput.isRecording else { return }
-            // capturePhoto()와 같은 이유의 가드다. 활성·사용 가능한 비디오 연결이 없거나
-            // 세션이 멈춘 상태에서 startRecording(to:)을 호출하면 Swift에서 잡을 수 없는
-            // NSException("no active and enabled connection")이 난다.
-            guard let connection = self.movieOutput.connection(with: .video),
-                  connection.isActive, connection.isEnabled, self.session.isRunning else {
-                DispatchQueue.main.async {
-                    self.errorBanner = "카메라가 연결되어 있지 않아 녹화할 수 없습니다."
-                }
+            // 마이크 부착보다 먼저 본다. 녹화를 못 하는 상황에 마이크만 붙이면 녹화도
+            // 안 하면서 마이크 사용 표시가 켜진 채 남는다.
+            guard self.canStartRecording else {
+                DispatchQueue.main.async { self.errorBanner = Self.noCameraMessage }
                 return
             }
             do {
@@ -417,6 +500,15 @@ final class CameraManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.errorBanner = "저장 폴더 생성 실패: \(error.localizedDescription)"
                 }
+                return
+            }
+            if let camera { self.attachAudioInput(pairedWith: camera) }
+            // 마이크를 붙이는 구성 트랜잭션은 실행 중인 세션을 잠깐 멈추고 연결을 다시
+            // 만든다. 그 뒤의 상태로 한 번 더 확인한다 — 여기서 어긋난 채 부르면 잡을 수
+            // 없는 예외로 프로세스가 죽는다. 어긋났으면 붙인 마이크도 되돌린다.
+            guard self.canStartRecording else {
+                self.detachAudioInput()
+                DispatchQueue.main.async { self.errorBanner = Self.noCameraMessage }
                 return
             }
             self.movieOutput.startRecording(to: self.mediaStore.movieURL(), recordingDelegate: self)
@@ -459,6 +551,12 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async { [weak self, session] in
             // 소유 큐에서 해제한다. 등록도 sessionQueue이므로 순서가 뒤집히지 않는다.
             self?.formatObservation = nil
+            // targetSpec도 비운다. 남겨 두면 다음 세션에서 KVO를 거는 시점과 새 초기
+            // 포맷을 적용하는 시점 사이에 "이전 기기의 목표"로 비교하게 되고, 새 기기에
+            // 이전 해상도를 강제하거나 없는 포맷을 요청하는 배너가 뜬다(start()의
+            // "이 시점에는 targetSpec이 아직 nil"이라는 주석이 그래야 참이 된다).
+            self?.targetSpec = nil
+            self?.reforceAttempts = 0
             session.beginConfiguration()
             session.inputs.forEach(session.removeInput)
             session.outputs.forEach(session.removeOutput)
@@ -475,23 +573,38 @@ final class CameraManager: NSObject, ObservableObject {
 extension CameraManager: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        let fileExtension = usesHEVCPhotos ? "heic" : "jpg"
-        DispatchQueue.main.async {
-            if let error {
+        // 이 콜백은 메인이 아닌 큐로 도착한다. 예전에는 일부러 메인으로 넘긴 뒤 거기서
+        // HEIC 직렬화(5~30밀리초)와 디스크 쓰기까지 했다 — 셔터 한 번에 메인 스레드가
+        // 그만큼 멈췄고, 번쩍임이 쓰기 "뒤"에 올라가 셔터 피드백도 그만큼 늦었다.
+        // 무거운 일은 이 큐에서 끝내고 메인에는 결과만 올린다.
+        if let error {
+            DispatchQueue.main.async {
                 self.errorBanner = "사진 촬영 실패: \(error.localizedDescription)"
-                return
             }
-            guard let data = photo.fileDataRepresentation() else {
+            return
+        }
+        // 번쩍임은 디스크를 기다리지 않는다. 사진이 찍힌 사실은 이미 확정됐다.
+        DispatchQueue.main.async { self.flashPulse += 1 }
+
+        let fileExtension = usesHEVCPhotos ? "heic" : "jpg"
+        guard let data = photo.fileDataRepresentation() else {
+            DispatchQueue.main.async {
                 self.errorBanner = "사진 데이터를 만들지 못했습니다."
-                return
             }
-            let url = self.mediaStore.photoURL(fileExtension: fileExtension)
-            do {
-                try self.mediaStore.ensureDirectoryExists()
-                try data.write(to: url)
-                self.lastSavedURL = url
-                self.flashPulse += 1
-            } catch {
+            return
+        }
+        let url = mediaStore.photoURL(fileExtension: fileExtension)
+        do {
+            try mediaStore.ensureDirectoryExists()
+            // .withoutOverwriting은 O_EXCL이라 경로에 무엇이 이미 있으면 실패한다.
+            // 끊어진 심볼릭 링크는 fileExists가 "없음"으로 보고하므로(stat 의미론) 그
+            // 링크를 따라가 엉뚱한 위치에 사진을 쓸 수 있었는데, 이 옵션이 그 경로를
+            // 닫는다. 이름 충돌은 photoURL의 _2 접미사가 이미 피하므로 정상 저장을
+            // 막지 않고, 실패하면 아래 배너가 그대로 알린다.
+            try data.write(to: url, options: .withoutOverwriting)
+            DispatchQueue.main.async { self.lastSavedURL = url }
+        } catch {
+            DispatchQueue.main.async {
                 self.errorBanner = "사진 저장 실패: \(error.localizedDescription)"
             }
         }
@@ -529,6 +642,10 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
             self.recordingTimer?.invalidate()
             self.recordingTimer = nil
             self.recordingStartDate = nil
+            // 녹화가 끝났으니 마이크를 뗀다(세션 변형이므로 소유 큐로 넘긴다). 이 시점에
+            // 파일은 이미 마무리돼 있다 — 델리게이트가 그 사실을 알리는 콜백이다.
+            // (바깥 블록이 self를 강하게 잡고 있으므로 여기서도 강한 캡처로 맞춘다.)
+            self.sessionQueue.async { self.detachAudioInput() }
             // error가 있다는 것만으로 실패라고 볼 수 없다. AVFoundation은 기기 이탈처럼
             // "중단됐지만 파일은 재생 가능한" 경우에도 error를 채워 보내고, 진짜 성공
             // 여부는 AVErrorRecordingSuccessfullyFinishedKey가 알려준다. 그래서 파일이
