@@ -40,23 +40,15 @@ struct CaptureView: View {
         .onContinuousHover(coordinateSpace: .local) { _ in
             visibility.poke()
         }
-        // ── 진단 계측(임시) ──────────────────────────────────────────────
-        // 전체화면 자동 숨김이 실기기에서 동작하지 않는다. 상태 기계는 정적으로는
-        // 맞게 읽히므로 어느 단계에서 끊기는지 stderr로 찍어 swift run 로그에서 읽는다.
-        // 원인이 잡히면 autohideLog 함수와 모든 호출을 지운다.
         // 전체화면 진입·이탈은 알림으로 안다. styleMask를 poke 시점에 읽는 방식은
         // "전체화면에 들어갔지만 마우스를 움직이지 않은" 경우에 타이머를 걸 계기가
         // 없어서 첫 숨김이 일어나지 않는다.
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didEnterFullScreenNotification)) { note in
-            autohideLog("didEnterFullScreen isMyWindow=\(isMyWindow(note)) hasWindow=\(windowHolder.window != nil)")
             if isMyWindow(note) { visibility.enterFullscreen() }
         }
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didExitFullScreenNotification)) { note in
-            // 진단: 들어간 직후 이탈 알림이 오면(창을 하나로 보지 못하는 경우 등)
-            // 상태가 곧바로 되돌려진다 — enter/exit 쌍을 함께 봐야 판별된다.
-            autohideLog("didExitFullScreen isMyWindow=\(isMyWindow(note))")
             if isMyWindow(note) { visibility.exitFullscreen() }
         }
         // 녹화가 시작되면 이미 숨어 있던 컨트롤을 다시 보인다(숨은 채로 시작하면
@@ -104,7 +96,6 @@ struct CaptureView: View {
             // 같다). 창이 실제로 전체화면인지 한 번 읽어 상태를 맞춘다. WindowAccessor가
             // 창을 채우는 것은 다음 메인 큐 턴이므로 한 턴 미뤄서 읽는다.
             DispatchQueue.main.async {
-                autohideLog("onAppear seed styleMask.fullScreen=\(windowHolder.window?.styleMask.contains(.fullScreen) == true) window=\(windowHolder.window == nil ? "nil" : "있음")")
                 if windowHolder.window?.styleMask.contains(.fullScreen) == true {
                     visibility.enterFullscreen()
                 }
@@ -259,14 +250,6 @@ struct CaptureView: View {
     }
 }
 
-/// 전체화면 자동 숨김 진단용 한 줄 로그(stderr → swift run 로그).
-///
-/// **임시 계측이다.** 원인이 잡히면 이 함수와 모든 호출을 지운다(전체화면 버튼 진단
-/// 계측을 그렇게 넣고 지웠다).
-private func autohideLog(_ message: String) {
-    FileHandle.standardError.write(Data("[WideCam autohide] \(message)\n".utf8))
-}
-
 /// 전체화면에서 가만히 두면 툴바와 상태 배지를 감추는 상태 기계.
 ///
 /// 전체화면일 때만 동작한다. 창 모드에서는 타이머를 걸지 않고 컨트롤을 항상 보인다 —
@@ -290,18 +273,13 @@ private final class ControlsVisibility: ObservableObject {
 
     /// 마우스가 움직였다. 컨트롤을 보이고 유예 시간을 처음부터 다시 센다.
     func poke() {
-        // 진단: 마우스가 멈춰 있는데도 이 줄이 쏟아지면 호버 이벤트가 계속 들어오는
-        // 것이고, 타이머가 영원히 재장착돼 숨김이 일어나지 않는다는 뜻이다.
-        autohideLog("poke controlsHidden=\(controlsHidden)")
         if controlsHidden { controlsHidden = false }
         armTimer()
     }
 
     func enterFullscreen() {
-        autohideLog("enterFullscreen 진입")
         isFullscreen = true
         controlsHidden = false
-        autohideLog("enterFullscreen 설정 후 isFullscreen=\(isFullscreen)")
         // 전체화면에 들어간 뒤 마우스를 한 번도 움직이지 않아도 숨어야 하므로
         // 여기서 타이머를 건다.
         armTimer()
@@ -315,7 +293,6 @@ private final class ControlsVisibility: ObservableObject {
     }
 
     private func armTimer() {
-        autohideLog("armTimer isFullscreen=\(isFullscreen)")
         timer?.invalidate()
         timer = nil
         guard isFullscreen else { return }
@@ -335,10 +312,6 @@ private final class ControlsVisibility: ObservableObject {
     }
 
     private func hide() {
-        // 진단: 이 줄이 아예 없으면 타이머가 발화하지 않은 것이고(등록·억제 문제),
-        // 있는데 아래 가드 줄에서 멈추면 상태가 어긋난 것이다.
-        autohideLog("hide fired")
-        autohideLog("hide guards isFullscreen=\(isFullscreen) isRecording=\(isRecording())")
         // 타이머가 걸린 뒤 전체화면에서 나갔다면 숨기지 않는다.
         guard isFullscreen else { return }
         // 전체화면 녹화 중에 빨간 표시와 경과 시간까지 숨으면 녹화하고 있다는 사실
@@ -346,7 +319,6 @@ private final class ControlsVisibility: ObservableObject {
         // 녹화 중에는 감추지 않는다.
         guard !isRecording() else { return }
         controlsHidden = true
-        autohideLog("hide -> controlsHidden=true")
         // 동영상 플레이어 관례: 컨트롤이 사라지면 포인터도 사라진다. 다음 마우스
         // 움직임에서 AppKit이 되살리고, 같은 움직임이 onContinuousHover로 들어와
         // 컨트롤도 함께 돌아온다.
