@@ -113,10 +113,18 @@ final class CameraManager: NSObject, ObservableObject {
     /// init()에서도 이 경로를 쓰므로 실행 시점의 메인 블로킹도 같이 사라진다.
     private func refreshDevices() {
         discoveryQueue.async { [weak self] in
-            // .external은 죽은 값이었다 — 아래 isContinuityCamera 필터가 전부 걸러내면서
-            // 열거 범위(USB/UVC 카메라·DAL 플러그인)만 넓혀 비용을 키웠다.
+            // 실측(2026-09-16): 아이폰 연속성 카메라는 이 macOS에서 .continuityCamera가
+            // 아니라 .external 타입으로 열거된다(.continuityCamera만으로는 0대).
+            // isContinuityCamera 필터가 선별을 담당하므로 .external은 죽은 값이 아니라
+            // 유일한 통로다. 제거 금지.
+            //
+            // 한 번 지웠다가 스모크에서 "팝오버에 아이폰이 안 보인다"로 되돌렸다. 정적
+            // 분석만으로 "필터가 어차피 걸러낸다"고 본 것이 틀렸다 — 필터가 걸러내는
+            // 대상과 통과시키는 대상을 실기기로 확인하지 않았다. .continuityCamera는
+            // 다른 OS 빌드에서 잡힐 수 있어 함께 남긴다(있어서 해가 없다).
             let discovery = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.continuityCamera], mediaType: .video, position: .unspecified)
+                deviceTypes: [.continuityCamera, .external],
+                mediaType: .video, position: .unspecified)
             let found = discovery.devices.filter { $0.isContinuityCamera }
             DispatchQueue.main.async {
                 guard let self else { return }
