@@ -110,13 +110,6 @@ widecam_app/
 
 뷰는 `CameraManager`의 `@Published` 상태만 구독한다. `@Published` 변경은 메인 큐에서, 세션과 포맷 조작은 `sessionQueue`에서 한다는 규칙을 코드 전체에서 지킨다.
 
-## 개발 노트
-
-설계 판단의 근거와 실측 기록은 저장소 안에 남겨뒀다.
-
-- `docs/superpowers/specs/2026-09-15-widecam-design.md` — 설계 문서. API 실측 결과, 화각 강제 로직, 범위 밖 항목
-- `docs/superpowers/plans/2026-09-15-widecam.md` — 구현 계획서
-
 ## 라이선스
 
 MIT. [LICENSE](LICENSE) 참조.
